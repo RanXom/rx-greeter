@@ -1,50 +1,28 @@
-
 {
   description = "rx-greeter development environment";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs }:
+  outputs = { nixpkgs, ... }:
     let
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
-
-      forAllSystems = nixpkgs.lib.genAttrs systems;
+      systems = [ "x86_64-linux" "aarch64-linux" ];
     in
     {
-      devShells = forAllSystems (system:
+      devShells = nixpkgs.lib.genAttrs systems (system:
         let
-          pkgs = import nixpkgs {
-            inherit system;
-          };
+          pkgs = import nixpkgs { inherit system; };
         in
         {
           default = pkgs.mkShell {
-            packages = with pkgs; [
-              gcc
-              clang
-              cmake
-              ninja
-              pkg-config
-
-              yyjson
-
-              gdb
-              valgrind
-              clang-tools
+            packages = [
+              pkgs.yyjson
             ];
 
             shellHook = ''
+              export PKG_CONFIG_PATH="${pkgs.yyjson}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               echo "rx-greeter development environment"
-              echo "compiler: $(cc --version | head -n1)"
-              echo "cmake: $(cmake --version | head -n1)"
             '';
           };
         });
     };
 }
-
