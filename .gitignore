@@ -1,0 +1,12 @@
+# devenv / nix
+.devenv/
+.direnv/
+devenv.local.nix
+devenv.local.yaml
+
+# generated compile database (absolute paths, machine-specific)
+compile_commands.json
+
+# build artefacts
+*.o
+build/

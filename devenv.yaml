@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+#
+# devenv.yaml = inputs + project-wide settings (not the environment itself).
+# That lives in devenv.nix. Inputs are pinned in devenv.lock.
+
+inputs:
+  # This is devenv's default, but pinning it here makes the dependency explicit.
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+
+# Set to true if you ever need an unfree package (proprietary fonts, drivers, ...).
+# allowUnfree: true
+
+# Hide the "(devenv)" prompt prefix (useful if Starship/oh-my-posh owns the prompt).
+# prompt_prefix: false
