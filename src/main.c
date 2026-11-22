@@ -36,7 +36,7 @@
 #endif
 
 #ifndef RX_GREETER_VERSION
-#define RX_GREETER_VERSION "1.0.2"
+#define RX_GREETER_VERSION "1.0.3"
 #endif
 
 struct App;
