@@ -1,14 +1,9 @@
 # Changelog
 
-## 1.0.1 — 2026-11-22
+## 1.0.2 — 2026-11-22
 
 ### Fixes
 
-- Fixed an infinite text-elision loop that froze the greeter when a session
-  name was wider than the selector (for example,
-  `Niri (HDMI / projector)`); the hang pegged the greeter at 100% CPU.
-- Removed the unconditional frame request on shared-memory buffer release, so
-  the greeter idles at 0% CPU instead of redrawing continuously.
 - Failed authentication now sends `cancel_session` before closing the greetd
   connection, so a retry no longer fails with "a session is already being
   configured".
@@ -18,10 +13,24 @@
   are still shown.
 - The user and session selector rows now animate closed when focus returns to
   the password field, matching the opening animation.
+- Added integration coverage for silent auth failures, session cancellation
+  and retry, and the selector collapse animation. The mock greetd now rejects
+  a new session if the previous failed one was not cancelled.
+- Refreshed the README screenshots for the minimal layout and silent auth
+  error.
+
+## 1.0.1 — 2026-11-22
+
+### Fixes
+
+- Fixed an infinite text-elision loop that froze the greeter when a session
+  name was wider than the selector (for example,
+  `Niri (HDMI / projector)`); the hang pegged the greeter at 100% CPU.
+- Removed the unconditional frame request on shared-memory buffer release, so
+  the greeter idles at 0% CPU instead of redrawing continuously.
 - Disabled clock and date by default in the example theme and Matugen
   template for the minimal layout.
-- Added integration coverage for long session names, silent auth failures,
-  session cancellation and retry, and the selector collapse animation.
+- Added a long-session-name regression case to the integration suite.
 
 ## 1.0.0 — 2026-11-22
 
