@@ -346,8 +346,10 @@ host user's `wayland-sessions`, home directory, or theme. It verifies:
 - two outputs at scale 1.4, the selected primary output, keyboard input on it,
   and a mouse click on the non-primary output
 - F10/F11/F12 power dry-runs
-- authentication error feedback and password clearing
+- authentication error feedback, silent PAM errors, session cancellation, and
+  password clearing
 - the visible auth-message path
+- selector collapse animation when returning to the password field
 - `create_session` → secret response → `success` → `start_session`
 
 Screenshots are written under `build/test-artifacts/<timestamp>/` with `grim`.
@@ -710,8 +712,11 @@ command = "/usr/bin/env RX_GREETER_CONFIG=/home/ranxom/.config/rx-greeter/config
 
 The greeter connects to `$GREETD_SOCK`, sends `create_session`, answers
 `auth_message` prompts, sends `start_session`, and exits so greetd can launch
-the session. `auth_error` keeps the greeter running with the password cleared.
-Escape during authentication sends `cancel_session`.
+the session. A failed `auth_error` cancels the greetd session, keeps the
+greeter running with the password cleared, and uses the red border/shake as
+feedback instead of echoing raw PAM errors. Visible challenges such as
+verification codes are still displayed. Escape during authentication sends
+`cancel_session`.
 
 ## Keys
 

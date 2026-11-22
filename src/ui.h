@@ -51,6 +51,7 @@ typedef struct {
     PasswordBuffer password;
     GdConn greetd;
     UiFocus focus;
+    UiFocus below_focus;
     UiPhase phase;
     int user_index;
     int session_index;
@@ -103,6 +104,8 @@ typedef struct {
     UiRect below_right_rect;
     UiRect user_preview_rect;
     UiRect session_preview_rect;
+    bool user_row_drawn;
+    bool below_row_drawn;
 
     bool pointer_inside;
     double pointer_x;

@@ -229,12 +229,30 @@ gd_cancel_and_close(GdConn *conn)
         gd_close(conn);
         return;
     }
-    /* Give greetd a brief chance to acknowledge the cancellation, but do not
-     * let a wedged daemon block the login screen. */
-    struct pollfd pfd = { .fd = conn->fd, .events = POLLIN };
-    if (poll(&pfd, 1, 250) > 0) {
+    /* Wait briefly for greetd to acknowledge the cancellation. The reply is
+     * what guarantees the next create_session cannot race the old one. */
+    int64_t deadline = now_ms() + 250;
+    for (;;) {
+        int64_t remaining = deadline - now_ms();
+        if (remaining <= 0) {
+            break;
+        }
+        struct pollfd pfd = { .fd = conn->fd, .events = POLLIN };
+        int rc = poll(&pfd, 1, (int)remaining);
+        if (rc <= 0) {
+            break;
+        }
         GdEvent event;
-        (void)gd_read(conn, &event);
+        int read = gd_read(conn, &event);
+        if (read < 0) {
+            break;
+        }
+        if (read == 0) {
+            continue;
+        }
+        if (event.type == GD_EVENT_SUCCESS || event.type == GD_EVENT_ERROR) {
+            break;
+        }
     }
     gd_close(conn);
 }

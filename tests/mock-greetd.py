@@ -56,12 +56,25 @@ class Mock:
     def __init__(self, args):
         self.args = args
         self.lock = threading.Lock()
+        self.session_lock = threading.Lock()
+        self.active_session = None
 
     def log(self, record):
         with self.lock:
             with open(self.args.log, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
+
+    def acquire_session(self, username):
+        with self.session_lock:
+            if self.active_session is not None:
+                return False
+            self.active_session = username
+            return True
+
+    def release_session(self):
+        with self.session_lock:
+            self.active_session = None
 
     def handle(self, conn, address):
         del address
@@ -78,6 +91,24 @@ class Mock:
                 kind = request.get("type")
                 if kind == "create_session":
                     state["username"] = request.get("username")
+                    if not self.acquire_session(state["username"]):
+                        # Real greetd rejects a second session while the
+                        # previous failed one is still being configured.
+                        self.log(
+                            {
+                                "event": "session_busy",
+                                "username": state["username"],
+                            }
+                        )
+                        send_message(
+                            conn,
+                            {
+                                "type": "error",
+                                "error_type": "error",
+                                "description": "a session is already being configured",
+                            },
+                        )
+                        break
                     state["stage"] = "password"
                     self.log({"type": kind, "username": state["username"]})
                     if self.args.mode == "hang":
@@ -113,6 +144,7 @@ class Mock:
                     time.sleep(self.args.delay_ms / 1000.0)
                     if self.args.mode == "error" and state["stage"] == "password":
                         self.log({"event": "auth_error"})
+                        state["stage"] = "failed"
                         send_message(
                             conn,
                             {
@@ -121,7 +153,7 @@ class Mock:
                                 "description": "Authentication failed",
                             },
                         )
-                        break
+                        continue
                     if state["stage"] == "info":
                         state["stage"] = "password"
                         send_message(
@@ -136,6 +168,7 @@ class Mock:
                     if state["stage"] == "password":
                         if response != self.args.password:
                             self.log({"event": "wrong_password"})
+                            state["stage"] = "failed"
                             send_message(
                                 conn,
                                 {
@@ -144,7 +177,7 @@ class Mock:
                                     "description": "Authentication failed",
                                 },
                             )
-                            break
+                            continue
                         if self.args.mode == "visible" and not state["visible_done"]:
                             state["stage"] = "visible"
                             send_message(
@@ -163,6 +196,7 @@ class Mock:
                             send_message(conn, {"type": "success"})
                         else:
                             self.log({"event": "wrong_code"})
+                            state["stage"] = "failed"
                             send_message(
                                 conn,
                                 {
@@ -171,7 +205,7 @@ class Mock:
                                     "description": "Invalid verification code",
                                 },
                             )
-                            break
+                            continue
                     else:
                         send_message(conn, {"type": "success"})
                 elif kind == "start_session":
@@ -182,6 +216,7 @@ class Mock:
                             "env": request.get("env"),
                         }
                     )
+                    self.release_session()
                     send_message(conn, {"type": "success"})
                     # Give the greeter time to exit and greetd to start the
                     # session. The integration test checks the log.
@@ -189,6 +224,7 @@ class Mock:
                     break
                 elif kind == "cancel_session":
                     self.log({"type": kind})
+                    self.release_session()
                     send_message(conn, {"type": "success"})
                     break
                 else:

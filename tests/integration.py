@@ -147,7 +147,7 @@ def main():
         "fallback_font_family = sans\n"
         "font_size = 16\n"
         "fade_ms = 0\n"
-        "animation_ms = 0\n"
+        "animation_ms = 200\n"
         "show_cursor = true\n"
         "show_clock = false\n"
         "show_date = false\n"
@@ -230,6 +230,8 @@ def main():
             "correct horse",
             "--mode",
             "visible",
+            "--delay-ms",
+            "200",
             "--log",
             str(mock_log),
         ],
@@ -409,7 +411,22 @@ def main():
         wait_until(lambda: status()["session_index"] == before,
                    "session back after click")
 
+        # --- selector collapse animation ----------------------------------
+        input_cmd("key Escape")
+        wait_until(lambda: status()["focus"] == "password",
+                   "session selector returns to password")
+        wait_until(
+            lambda: status()["below_row"]["h"] < 25
+            and status()["below_row_drawn"],
+            "collapsing session selector stays drawn",
+        )
+        screenshot("05c-session-collapse.png")
+        wait_until(lambda: status()["below_row"]["h"] < 0.5,
+                   "session selector collapsed")
+
         # --- power selector and dry-run keys ------------------------------
+        input_cmd("key Down")
+        wait_until(lambda: status()["focus"] == "session", "session refocused")
         input_cmd("key Down")
         wait_until(lambda: status()["focus"] == "power", "power selector focus")
         wait_until(lambda: status()["below_row"]["h"] > 30, "power selector expanded")
@@ -432,12 +449,30 @@ def main():
         # --- authentication error, clear, retry ---------------------------
         input_cmd("text wrong password")
         input_cmd("key Return")
+        wait_until(
+            lambda: status()["last_auth_type"] == "secret"
+            and status()["phase"] == "waiting",
+            "secret authentication prompt",
+        )
+        state = status()
+        if state["prompt"]:
+            raise Failure(f"raw PAM password prompt is visible: {state['prompt']}")
         wait_until(lambda: status()["error_active"] is True, "auth error feedback")
         state = status()
         if state["password_len"] != 0:
             raise Failure("password was not cleared on authentication error")
-        if "Authentication" not in state["message"]:
-            raise Failure(f"unexpected auth error message: {state['message']}")
+        if state["message"]:
+            raise Failure(f"raw auth error message is visible: {state['message']}")
+        if state["prompt"]:
+            raise Failure(f"raw auth prompt is visible after error: {state['prompt']}")
+        wait_until(
+            lambda: status()["previews_visible"],
+            "selector previews remain visible after auth error",
+        )
+        wait_log(
+            lambda record: record.get("type") == "cancel_session",
+            "cancel_session after auth error",
+        )
         screenshot("08-auth-error.png")
         wait_until(lambda: status()["error_active"] is False, "error border reset")
 
@@ -447,6 +482,9 @@ def main():
         wait_until(lambda: status()["phase"] == "input", "visible auth prompt")
         wait_until(lambda: status()["last_auth_type"] == "visible",
                    "visible message type")
+        state = status()
+        if "Verification code" not in state["prompt"]:
+            raise Failure(f"visible auth prompt is missing: {state['prompt']}")
         screenshot("09-visible-prompt.png")
         input_cmd("text 123456")
         input_cmd("key Return")
@@ -465,6 +503,13 @@ def main():
             raise Failure(f"missing session environment: {env_list}")
         wait_until(lambda: status().get("phase") == "finished",
                    "greeter finished", timeout=8.0)
+        records = [
+            json.loads(line)
+            for line in mock_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if any(record.get("event") == "session_busy" for record in records):
+            raise Failure("a failed auth session was not cancelled")
         sway.wait(timeout=8)
         log("session start accepted; greeter and nested Sway exited")
 

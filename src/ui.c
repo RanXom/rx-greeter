@@ -398,6 +398,9 @@ set_focus(Ui *ui, UiFocus focus)
     ui->user_height = layout_user_height(ui, now);
     ui->below_height = layout_below_height(ui, now);
     ui->focus = focus;
+    if (focus == UI_FOCUS_SESSION || focus == UI_FOCUS_POWER) {
+        ui->below_focus = focus;
+    }
     ui->user_height_from = ui->user_height;
     ui->user_height_to = focus == UI_FOCUS_USER ? ui->config->selector_height : 0.0;
     ui->user_height_started_ms = now;
@@ -472,6 +475,7 @@ trigger_login_error(Ui *ui, const char *message)
     ui->phase = UI_PHASE_IDLE;
     ui->initial_password_ready = false;
     ui->auth_input_secret = false;
+    ui->start_sent = false;
     ui->prompt[0] = '\0';
     if (ui->config->clear_password_on_error) {
         password_clear(&ui->password);
@@ -480,7 +484,11 @@ trigger_login_error(Ui *ui, const char *message)
     ui->error_started_ms = now;
     ui->error_until_ms = now + ui->config->error_hold_ms;
     set_focus(ui, UI_FOCUS_PASSWORD);
-    show_message(ui, UI_MESSAGE_ERROR, message);
+    if (message && *message) {
+        show_message(ui, UI_MESSAGE_ERROR, message);
+    } else {
+        show_message(ui, UI_MESSAGE_NONE, "");
+    }
     mark_debug(ui);
 }
 
@@ -489,9 +497,11 @@ auth_error(Ui *ui, const char *message)
 {
     rx_log(LOG_WARNING, "authentication failed: %s",
            message && *message ? message : "unknown error");
-    gd_close(&ui->greetd);
-    trigger_login_error(ui,
-                        message && *message ? message : "Authentication failed");
+    /* greetd keeps the failed session in the configuring state until it is
+     * explicitly cancelled. Closing the socket alone leaves an orphan, and the
+     * next create_session fails with "a session is already being configured". */
+    gd_cancel_and_close(&ui->greetd);
+    trigger_login_error(ui, NULL);
 }
 
 static void
@@ -626,6 +636,9 @@ handle_auth_message(Ui *ui, const GdEvent *event)
     snprintf(ui->prompt, sizeof(ui->prompt), "%s", event->auth_message);
 
     if (strcmp(event->auth_message_type, "secret") == 0) {
+        /* The password field already communicates what is being asked; do not
+         * echo PAM's raw "Password:" prompt above it. */
+        ui->prompt[0] = '\0';
         if (ui->initial_password_ready) {
             ui->phase = UI_PHASE_WAITING;
             send_auth_response(ui);
@@ -652,7 +665,10 @@ handle_auth_message(Ui *ui, const GdEvent *event)
             auth_error(ui, error);
         }
     } else if (strcmp(event->auth_message_type, "error") == 0) {
-        show_message(ui, UI_MESSAGE_ERROR, event->auth_message);
+        rx_log(LOG_WARNING, "authentication message: %s",
+               event->auth_message[0] ? event->auth_message : "unknown error");
+        ui->prompt[0] = '\0';
+        show_message(ui, UI_MESSAGE_NONE, "");
         ui->phase = UI_PHASE_WAITING;
         ui->auth_started_ms = now_ms();
         char error[256];
@@ -1531,18 +1547,26 @@ draw_selector_row(Ui *ui, cairo_t *cr, double alpha, UiRect row,
     cairo_restore(cr);
 }
 
+static bool
+previews_enabled(const Ui *ui)
+{
+    return ui->config->show_selector_preview && ui->phase == UI_PHASE_IDLE &&
+           !ui->message[0];
+}
+
 static void
 draw_previews(Ui *ui, cairo_t *cr, double alpha, int64_t now)
 {
-    if (!ui->config->show_selector_preview || ui->phase != UI_PHASE_IDLE ||
-        ui->message[0]) {
+    ui->user_preview_rect = (UiRect){ 0 };
+    ui->session_preview_rect = (UiRect){ 0 };
+    if (!previews_enabled(ui)) {
         return;
     }
     (void)now;
 
     const char *user = selected_user(ui);
     if (user && *user && ui->focus != UI_FOCUS_USER &&
-        user_selector_available(ui)) {
+        ui->user_height <= 0.5 && user_selector_available(ui)) {
         double width = text_width(cr, user, ui->resolved_font,
                                   ui->config->selector_preview_font_size);
         double cy = ui->field_rect.y - ui->config->selector_preview_margin -
@@ -1561,7 +1585,8 @@ draw_previews(Ui *ui, cairo_t *cr, double alpha, int64_t now)
 
     const Session *session = selected_session(ui);
     if (session && ui->focus != UI_FOCUS_SESSION &&
-        ui->focus != UI_FOCUS_POWER && session_selector_available(ui)) {
+        ui->focus != UI_FOCUS_POWER && ui->below_height <= 0.5 &&
+        session_selector_available(ui)) {
         double width = text_width(cr, session->name, ui->resolved_font,
                                   ui->config->selector_preview_font_size);
         double cy = ui->field_rect.y + ui->field_rect.h +
@@ -1588,6 +1613,8 @@ ui_render(Ui *ui, cairo_t *cr, int width, int height)
     int64_t now = now_ms();
     layout(ui, now);
     double alpha = ui_alpha(ui, now);
+    ui->user_row_drawn = false;
+    ui->below_row_drawn = false;
 
     draw_background(ui, cr);
     draw_clock(ui, cr, alpha);
@@ -1595,20 +1622,21 @@ ui_render(Ui *ui, cairo_t *cr, int width, int height)
     draw_caps_lock(ui, cr, alpha);
     draw_previews(ui, cr, alpha, now);
 
-    if (ui->focus == UI_FOCUS_USER && ui->user_row_rect.h > 0.5) {
+    if (ui->user_row_rect.h > 0.5) {
         draw_selector_row(ui, cr, alpha, ui->user_row_rect, "<",
                           selected_user(ui), ">");
+        ui->user_row_drawn = true;
     }
-    if ((ui->focus == UI_FOCUS_SESSION || ui->focus == UI_FOCUS_POWER) &&
-        ui->below_row_rect.h > 0.5) {
-        if (ui->focus == UI_FOCUS_SESSION) {
+    if (ui->below_row_rect.h > 0.5) {
+        if (ui->below_focus == UI_FOCUS_POWER) {
+            draw_selector_row(ui, cr, alpha, ui->below_row_rect, "<",
+                              power_labels[ui->power_index], ">");
+        } else {
             const Session *session = selected_session(ui);
             draw_selector_row(ui, cr, alpha, ui->below_row_rect, "<",
                               session ? session->name : "no sessions", ">");
-        } else {
-            draw_selector_row(ui, cr, alpha, ui->below_row_rect, "<",
-                              power_labels[ui->power_index], ">");
         }
+        ui->below_row_drawn = true;
     }
 
     draw_field(ui, cr, alpha, now);
@@ -1702,6 +1730,8 @@ debug_write(Ui *ui)
                            json_object_new_int((int)ui->password.len));
     json_object_object_add(object, "message", json_object_new_string(ui->message));
     json_object_object_add(object, "prompt", json_object_new_string(ui->prompt));
+    json_object_object_add(object, "previews_visible",
+                           json_object_new_boolean(previews_enabled(ui)));
     json_object_object_add(object, "last_auth_type",
                            json_object_new_string(ui->last_auth_type));
     json_object_object_add(object, "error_active",
@@ -1763,6 +1793,10 @@ debug_write(Ui *ui)
                            rect_json(ui->user_preview_rect));
     json_object_object_add(object, "session_preview",
                            rect_json(ui->session_preview_rect));
+    json_object_object_add(object, "user_row_drawn",
+                           json_object_new_boolean(ui->user_row_drawn));
+    json_object_object_add(object, "below_row_drawn",
+                           json_object_new_boolean(ui->below_row_drawn));
 
     char temp_path[PATH_MAX];
     snprintf(temp_path, sizeof(temp_path), "%s.tmp.%ld", ui->debug_status_path,
@@ -1789,6 +1823,7 @@ ui_create(Config *config, const char *debug_status_path)
     Ui *ui = xcalloc(1, sizeof(*ui));
     ui->config = config;
     ui->focus = UI_FOCUS_PASSWORD;
+    ui->below_focus = UI_FOCUS_SESSION;
     ui->phase = UI_PHASE_IDLE;
     ui->user_index = -1;
     ui->session_index = -1;

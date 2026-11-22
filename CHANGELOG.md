@@ -9,9 +9,19 @@
   `Niri (HDMI / projector)`); the hang pegged the greeter at 100% CPU.
 - Removed the unconditional frame request on shared-memory buffer release, so
   the greeter idles at 0% CPU instead of redrawing continuously.
+- Failed authentication now sends `cancel_session` before closing the greetd
+  connection, so a retry no longer fails with "a session is already being
+  configured".
+- Raw PAM prompts and authentication errors are no longer echoed by the
+  greeter. The red border and shake are the failure feedback, and the user and
+  session previews stay visible. Visible challenges such as verification codes
+  are still shown.
+- The user and session selector rows now animate closed when focus returns to
+  the password field, matching the opening animation.
 - Disabled clock and date by default in the example theme and Matugen
   template for the minimal layout.
-- Added a long-session-name regression case to the integration suite.
+- Added integration coverage for long session names, silent auth failures,
+  session cancellation and retry, and the selector collapse animation.
 
 ## 1.0.0 — 2026-11-22
 
