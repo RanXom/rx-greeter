@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.1 — 2026-11-22
+
+### Fixes
+
+- Fixed an infinite text-elision loop that froze the greeter when a session
+  name was wider than the selector (for example,
+  `Niri (HDMI / projector)`); the hang pegged the greeter at 100% CPU.
+- Removed the unconditional frame request on shared-memory buffer release, so
+  the greeter idles at 0% CPU instead of redrawing continuously.
+- Disabled clock and date by default in the example theme and Matugen
+  template for the minimal layout.
+- Added a long-session-name regression case to the integration suite.
+
 ## 1.0.0 — 2026-11-22
 
 First release.

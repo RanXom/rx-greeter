@@ -36,7 +36,7 @@
 #endif
 
 #ifndef RX_GREETER_VERSION
-#define RX_GREETER_VERSION "1.0.0"
+#define RX_GREETER_VERSION "1.0.1"
 #endif
 
 struct App;
@@ -175,7 +175,9 @@ buffer_release(void *data, struct wl_buffer *wl_buffer)
     (void)wl_buffer;
     struct Buffer *buffer = data;
     buffer->busy = false;
-    buffer->output->app->needs_redraw = true;
+    /* A released buffer is not itself a reason to render again. The main loop
+     * renders when the UI is dirty or a configure/scale change is pending;
+     * scheduling a frame here causes a permanent redraw loop. */
 }
 
 static const struct wl_buffer_listener buffer_listener = {

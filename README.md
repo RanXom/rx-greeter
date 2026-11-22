@@ -36,7 +36,7 @@ Matugen theme and blurred wallpaper.
 - Cover-scaled, pre-blurred wallpaper and a configurable dark overlay.
 - Centered password field with dots, waylock-compatible geometry, red error
   border and shake, and password clearing on failure.
-- Optional clock and date.
+- Optional clock and date (off by default for a minimal layout).
 - User selector (`/etc/passwd`, uid >= 1000, valid shell).
 - Session selector (`wayland-sessions` desktop files, local entries take
   precedence), including a configured session wrapper.

@@ -173,7 +173,7 @@ draw_text_elided(cairo_t *cr, double cx, double cy, const char *text,
 
     size_t len = strlen(text);
     size_t best = 0;
-    for (size_t i = 0; i < len; i = utf8_next_codepoint(text, len)) {
+    for (size_t i = 0; i < len;) {
         size_t next = utf8_next_codepoint(text + i, len - i);
         char *prefix = xstrndup(text, i + next);
         cairo_text_extents_t prefix_ext;
@@ -184,6 +184,7 @@ draw_text_elided(cairo_t *cr, double cx, double cy, const char *text,
         } else {
             break;
         }
+        i += next;
     }
     if (best == 0) {
         return;

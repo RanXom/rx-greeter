@@ -114,6 +114,17 @@ def main():
         "DesktopNames=other\n",
         encoding="utf-8",
     )
+    # Regression: a name wider than the selector used to make the elision
+    # helper loop forever and peg the greeter at 100% CPU.
+    long_session = "Niri (HDMI / projector)"
+    (sessions_dir / "zz-long-session.desktop").write_text(
+        "[Desktop Entry]\n"
+        f"Name={long_session}\n"
+        "Exec=/bin/true\n"
+        "Type=Application\n"
+        "DesktopNames=long\n",
+        encoding="utf-8",
+    )
     wallpaper = artifacts / "wallpaper.png"
     write_test_png(wallpaper)
 
@@ -375,6 +386,18 @@ def main():
         before = status()["session_index"]
         if before < 0:
             raise Failure("no selected session")
+        input_cmd("key Right")
+        wait_until(lambda: status()["session_index"] != before,
+                   "keyboard session right arrow")
+        state = status()
+        if state["session"] != long_session:
+            raise Failure(f"expected the long session, got {state['session']}")
+        screenshot("05b-long-session.png")
+        input_cmd("key Left")
+        wait_until(lambda: status()["session_index"] == before,
+                   "session back to Test Session")
+        wait_until(lambda: status()["session"] == "Test Session",
+                   "selected session name")
         below_right = status()["below_right"]
         input_cmd(
             f"click {int(below_right['x'] + below_right['w'] / 2)} "
@@ -384,9 +407,7 @@ def main():
                    "click session right arrow")
         input_cmd("key Left")
         wait_until(lambda: status()["session_index"] == before,
-                   "session back to Test Session")
-        wait_until(lambda: status()["session"] == "Test Session",
-                   "selected session name")
+                   "session back after click")
 
         # --- power selector and dry-run keys ------------------------------
         input_cmd("key Down")
