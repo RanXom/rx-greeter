@@ -1531,13 +1531,15 @@ draw_selector_row(Ui *ui, cairo_t *cr, double alpha, UiRect row,
      * The row has no background, and the center text is already elided. */
     double cy = row.y + row.h / 2.0;
     double arrow = ui->config->selector_arrow_width;
+    double arrow_alpha =
+        alpha * clamp01(row.h / fmax(1.0, ui->config->selector_arrow_font_size));
     draw_text_center(cr, row.x + arrow / 2.0, cy, left_text, ui->resolved_font,
                      ui->config->selector_arrow_font_size,
-                     ui->config->text_color, alpha);
+                     ui->config->text_color, arrow_alpha);
     draw_text_center(cr, row.x + row.w - arrow / 2.0, cy, right_text,
                      ui->resolved_font,
                      ui->config->selector_arrow_font_size,
-                     ui->config->text_color, alpha);
+                     ui->config->text_color, arrow_alpha);
     draw_text_elided(cr, row.x + row.w / 2.0, cy, center_text,
                      row.w - 2.0 * arrow - 20.0, ui->resolved_font,
                      ui->config->selector_font_size, ui->config->text_color,
