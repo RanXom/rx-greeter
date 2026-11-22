@@ -450,6 +450,15 @@ def main():
         input_cmd("text wrong password")
         input_cmd("key Return")
         wait_until(
+            lambda: status()["phase"] in ("connecting", "waiting"),
+            "authentication started",
+        )
+        state = status()
+        if state["prompt"]:
+            raise Failure(f"placeholder prompt is visible: {state['prompt']}")
+        if not state["previews_visible"]:
+            raise Failure("selector previews disappeared when authentication started")
+        wait_until(
             lambda: status()["last_auth_type"] == "secret"
             and status()["phase"] == "waiting",
             "secret authentication prompt",
@@ -457,6 +466,8 @@ def main():
         state = status()
         if state["prompt"]:
             raise Failure(f"raw PAM password prompt is visible: {state['prompt']}")
+        if not state["previews_visible"]:
+            raise Failure("selector previews disappeared during authentication")
         wait_until(lambda: status()["error_active"] is True, "auth error feedback")
         state = status()
         if state["password_len"] != 0:

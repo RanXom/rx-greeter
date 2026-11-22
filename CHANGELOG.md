@@ -12,10 +12,18 @@
   session previews stay visible. Visible challenges such as verification codes
   are still shown.
 - The user and session selector rows now animate closed when focus returns to
-  the password field, matching the opening animation.
+  the password field, matching the opening animation. The row text is no
+  longer clipped to the shrinking height, which removed the end-of-animation
+  flicker.
+- Selector previews stay visible while a password is being checked and after a
+  failed attempt. They hide only once authentication succeeds and the session
+  is starting.
+- Removed the transient "Authenticating..." text that replaced the user
+  selector during login.
 - Added integration coverage for silent auth failures, session cancellation
-  and retry, and the selector collapse animation. The mock greetd now rejects
-  a new session if the previous failed one was not cancelled.
+  and retry, retained previews during authentication, and the selector
+  collapse animation. The mock greetd now rejects a new session if the
+  previous failed one was not cancelled.
 - Refreshed the README screenshots for the minimal layout and silent auth
   error.
 

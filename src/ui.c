@@ -621,7 +621,7 @@ begin_login(Ui *ui)
     ui->error_active = false;
     ui->message[0] = '\0';
     ui->message_kind = UI_MESSAGE_NONE;
-    snprintf(ui->prompt, sizeof(ui->prompt), "Authenticating...");
+    ui->prompt[0] = '\0';
     set_focus(ui, UI_FOCUS_PASSWORD);
     mark_debug(ui);
 
@@ -1526,10 +1526,9 @@ draw_selector_row(Ui *ui, cairo_t *cr, double alpha, UiRect row,
     if (row.h <= 0.5) {
         return;
     }
-    cairo_save(cr);
-    cairo_rectangle(cr, row.x, row.y, row.w, row.h);
-    cairo_clip(cr);
-
+    /* Do not clip vertically to the animated row height: that slices the text
+     * into a thin line near the end of the collapse and reads as a flicker.
+     * The row has no background, and the center text is already elided. */
     double cy = row.y + row.h / 2.0;
     double arrow = ui->config->selector_arrow_width;
     draw_text_center(cr, row.x + arrow / 2.0, cy, left_text, ui->resolved_font,
@@ -1543,14 +1542,14 @@ draw_selector_row(Ui *ui, cairo_t *cr, double alpha, UiRect row,
                      row.w - 2.0 * arrow - 20.0, ui->resolved_font,
                      ui->config->selector_font_size, ui->config->text_color,
                      alpha);
-
-    cairo_restore(cr);
 }
 
 static bool
 previews_enabled(const Ui *ui)
 {
-    return ui->config->show_selector_preview && ui->phase == UI_PHASE_IDLE &&
+    return ui->config->show_selector_preview &&
+           (ui->phase == UI_PHASE_IDLE || ui->phase == UI_PHASE_CONNECTING ||
+            ui->phase == UI_PHASE_WAITING || ui->phase == UI_PHASE_INPUT) &&
            !ui->message[0];
 }
 
@@ -1566,7 +1565,8 @@ draw_previews(Ui *ui, cairo_t *cr, double alpha, int64_t now)
 
     const char *user = selected_user(ui);
     if (user && *user && ui->focus != UI_FOCUS_USER &&
-        ui->user_height <= 0.5 && user_selector_available(ui)) {
+        ui->user_height <= 0.5 && !ui->prompt[0] &&
+        user_selector_available(ui)) {
         double width = text_width(cr, user, ui->resolved_font,
                                   ui->config->selector_preview_font_size);
         double cy = ui->field_rect.y - ui->config->selector_preview_margin -
