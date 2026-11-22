@@ -6,13 +6,16 @@
 #
 # Useful environment:
 #   RX_GREETER_BIN            greeter binary (default: sibling or /usr/local/bin)
-#   RX_GREETER_THEME          theme file
+#   RX_GREETER_CONFIG         host config file
+#   RX_GREETER_THEME          visual theme file
 #   RX_GREETER_LOG            "stderr", "none", or a writable file path
 #   RX_GREETER_DRM_CARD       DRM card for WLR_DRM_DEVICES
 #   RX_GREETER_DRM_RENDER     render node for WLR_RENDER_DRM_DEVICE
 #   RX_GREETER_DGPU_OFF       optional executable to power off the dGPU
-#   RX_GREETER_XKB_LAYOUT     keyboard layout (default: us)
+#   RX_GREETER_XKB_LAYOUT     keyboard layout (default: XKB_DEFAULT_LAYOUT or us)
+#   RX_GREETER_XKB_VARIANT    keyboard variant
 #   RX_GREETER_XKB_OPTIONS    xkb options, e.g. "caps:escape"
+#   RX_GREETER_OUTPUT         primary output name for keyboard focus
 #   RX_GREETER_OUTPUT_SCALE   optional Sway output scale, e.g. 1.4
 #   RX_GREETER_COMPOSITOR     compositor binary (default: sway)
 #   WLR_LOG                   wlroots log level (default: error)
@@ -107,27 +110,75 @@ fi
 unset WAYLAND_DISPLAY SWAYSOCK I3SOCK
 unset SWAYSOCK
 
-# Pin wlroots to the AMD iGPU, matching ~/.local/bin/sway-session. If the
-# machine has no such device, wlroots falls back to its normal auto-detection.
-_amd_card="${RX_GREETER_DRM_CARD:-}"
-_amd_render="${RX_GREETER_DRM_RENDER:-}"
-if [ -z "${_amd_card}" ]; then
-    _amd_card="$(readlink -f /dev/dri/by-path/pci-0000:05:00.0-card 2>/dev/null || true)"
+# Pin wlroots away from NVIDIA when the machine has another DRM device.
+# Explicit RX_GREETER_DRM_CARD/RENDER values win. If no safe candidate is
+# found, leave the variables unset so wlroots can auto-detect.
+_drm_card="${RX_GREETER_DRM_CARD:-}"
+_drm_render="${RX_GREETER_DRM_RENDER:-}"
+if [ -z "${_drm_card}" ]; then
+    _candidate=""
+    _selected=""
+    for _dev in /sys/class/drm/card[0-9]*; do
+        [ -e "${_dev}/device/vendor" ] || continue
+        _vendor="$(cat "${_dev}/device/vendor" 2>/dev/null || true)"
+        [ "${_vendor}" = "0x10de" ] && continue
+        _name="$(basename "${_dev}")"
+        [ -e "/dev/dri/${_name}" ] || continue
+        _connected=0
+        for _status in "${_dev}"-*/status; do
+            [ -e "${_status}" ] || continue
+            if [ "$(cat "${_status}" 2>/dev/null || true)" = "connected" ]; then
+                _connected=1
+                break
+            fi
+        done
+        [ -z "${_candidate}" ] && _candidate="${_name}"
+        if [ "${_connected}" -eq 1 ]; then
+            _selected="${_name}"
+            break
+        fi
+    done
+    [ -z "${_selected}" ] && _selected="${_candidate}"
+    if [ -n "${_selected}" ]; then
+        _drm_card="/dev/dri/${_selected}"
+        if [ -z "${_drm_render}" ]; then
+            _render_sys="$(find "/sys/class/drm/${_selected}/device/drm"                 -maxdepth 1 -name 'renderD*' -print -quit 2>/dev/null || true)"
+            if [ -n "${_render_sys}" ]; then
+                _drm_render="/dev/dri/$(basename "${_render_sys}")"
+            fi
+        fi
+    fi
 fi
-if [ -z "${_amd_render}" ]; then
-    _amd_render="$(readlink -f /dev/dri/by-path/pci-0000:05:00.0-render 2>/dev/null || true)"
+if [ -n "${_drm_card}" ]; then
+    _drm_card="$(readlink -f "${_drm_card}" 2>/dev/null || printf '%s' "${_drm_card}")"
 fi
-if [ -n "${_amd_card}" ] && [ -e "${_amd_card}" ]; then
-    export WLR_DRM_DEVICES="${_amd_card}"
+if [ -n "${_drm_render}" ]; then
+    _drm_render="$(readlink -f "${_drm_render}" 2>/dev/null || printf '%s' "${_drm_render}")"
 fi
-if [ -n "${_amd_render}" ] && [ -e "${_amd_render}" ]; then
-    export WLR_RENDER_DRM_DEVICE="${_amd_render}"
+if [ -n "${_drm_card}" ] && [ -z "${_drm_render}" ]; then
+    _selected="$(basename "${_drm_card}")"
+    _render_sys="$(find "/sys/class/drm/${_selected}/device/drm" \
+        -maxdepth 1 -name 'renderD*' -print -quit 2>/dev/null || true)"
+    if [ -n "${_render_sys}" ]; then
+        _drm_render="/dev/dri/$(basename "${_render_sys}")"
+    fi
 fi
+if [ -n "${_drm_card}" ] && [ -e "${_drm_card}" ]; then
+    export WLR_DRM_DEVICES="${_drm_card}"
+fi
+if [ -n "${_drm_render}" ] && [ -e "${_drm_render}" ]; then
+    export WLR_RENDER_DRM_DEVICE="${_drm_render}"
+fi
+echo "WLR_DRM_DEVICES=${WLR_DRM_DEVICES:-unset}"
+echo "WLR_RENDER_DRM_DEVICE=${WLR_RENDER_DRM_DEVICE:-unset}"
 
-# Optional dGPU power-off hook. Install a fixed helper here (or point the
-# variable at one) if the dotfiles install a doas rule for the greetd user.
+# Optional dGPU power-off hook. The installed helpers live next to the
+# session script; the old /usr/local path remains as a compatibility fallback.
+_libexec_dir="$(CDPATH= cd -- "${_session_dir}/../libexec" 2>/dev/null && pwd || true)"
 if [ -n "${RX_GREETER_DGPU_OFF:-}" ] && [ -x "${RX_GREETER_DGPU_OFF}" ]; then
     "${RX_GREETER_DGPU_OFF}" >/dev/null 2>&1 || true
+elif [ -n "${_libexec_dir}" ] && [ -x "${_libexec_dir}/rx-greeter-dgpu-off" ]; then
+    "${_libexec_dir}/rx-greeter-dgpu-off" >/dev/null 2>&1 || true
 elif [ -x /usr/local/libexec/rx-greeter-dgpu-off ]; then
     /usr/local/libexec/rx-greeter-dgpu-off >/dev/null 2>&1 || true
 fi
@@ -145,29 +196,25 @@ if [ -n "${RX_GREETER_POWER:-}" ]; then
     export RX_GREETER_POWER
 fi
 
-# Choose the user's generated theme when it is readable by greetd. The
-# fallbacks are installed copies for systems with a private home directory.
-if [ -z "${RX_GREETER_THEME:-}" ]; then
-    for _candidate in \
-        /home/ranxom/.config/rx-greeter/theme.conf \
-        /var/lib/rx-greeter/theme.conf \
-        /etc/rx-greeter/theme.conf
-    do
-        if [ -r "${_candidate}" ]; then
-            RX_GREETER_THEME="${_candidate}"
-            export RX_GREETER_THEME
-            break
-        fi
-    done
-fi
+# Theme and host policy are resolved by the greeter itself:
+#   RX_GREETER_CONFIG / --config
+#   /etc/rx-greeter/config.conf
+#   RX_GREETER_THEME / --theme
+#   /etc/rx-greeter/theme.conf
+#   /var/lib/rx-greeter/theme.conf
+# Set RX_GREETER_THEME in the greetd command to use a per-user Matugen theme.
 
 # Keep a tiny minimal Sway config. No user config, bars, idle daemons, or
 # wallpapers: the greeter draws the wallpaper itself in its fullscreen window.
-_xkb_layout="${RX_GREETER_XKB_LAYOUT:-us}"
+_xkb_layout="${RX_GREETER_XKB_LAYOUT:-${XKB_DEFAULT_LAYOUT:-us}}"
 case "${_xkb_layout}" in
     *[!A-Za-z0-9_,+-]*) _xkb_layout="us" ;;
 esac
-_xkb_options="${RX_GREETER_XKB_OPTIONS:-}"
+_xkb_variant="${RX_GREETER_XKB_VARIANT:-${XKB_DEFAULT_VARIANT:-}}"
+case "${_xkb_variant}" in
+    *[!A-Za-z0-9_,+-]*) _xkb_variant="" ;;
+esac
+_xkb_options="${RX_GREETER_XKB_OPTIONS:-${XKB_DEFAULT_OPTIONS:-}}"
 case "${_xkb_options}" in
     *[!A-Za-z0-9_,:+-]*) _xkb_options="" ;;
 esac
@@ -193,6 +240,9 @@ chmod 700 "${_launcher}"
     echo "for_window [app_id=\"rx-greeter\"] fullscreen enable"
     echo "for_window [app_id=\"rx-greeter\"] focus"
     echo "input type:keyboard xkb_layout ${_xkb_layout}"
+    if [ -n "${_xkb_variant}" ]; then
+        echo "input type:keyboard xkb_variant ${_xkb_variant}"
+    fi
     if [ -n "${_xkb_options}" ]; then
         echo "input type:keyboard xkb_options ${_xkb_options}"
     fi

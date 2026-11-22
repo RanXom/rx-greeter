@@ -11,6 +11,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <syslog.h>
 
 struct string_list {
     char **items;
@@ -49,9 +50,11 @@ compare_strings(const void *a, const void *b)
 }
 
 static void
-add_search_dirs(struct string_list *dirs)
+add_search_dirs(struct string_list *dirs, const char *dirs_override)
 {
-    const char *override = getenv("RX_GREETER_SESSION_DIRS");
+    const char *override = (dirs_override && *dirs_override)
+                               ? dirs_override
+                               : getenv("RX_GREETER_SESSION_DIRS");
     if (override && *override) {
         char *copy = xstrdup(override);
         char *save = NULL;
@@ -122,6 +125,7 @@ parse_desktop_file(const char *path, Session *session)
     char *exec = NULL;
     char *comment = NULL;
     char *icon = NULL;
+    char *try_exec = NULL;
     char *desktop_names = NULL;
     bool hidden = false;
     bool no_display = false;
@@ -166,6 +170,9 @@ parse_desktop_file(const char *path, Session *session)
         } else if (strcmp(key, "Icon") == 0) {
             free(icon);
             icon = unescaped;
+        } else if (strcmp(key, "TryExec") == 0) {
+            free(try_exec);
+            try_exec = unescaped;
         } else if (strcmp(key, "DesktopNames") == 0) {
             free(desktop_names);
             desktop_names = unescaped;
@@ -186,6 +193,18 @@ parse_desktop_file(const char *path, Session *session)
         free(exec);
         free(comment);
         free(icon);
+        free(try_exec);
+        free(desktop_names);
+        return false;
+    }
+    if (try_exec && *try_exec && !find_in_path(try_exec, NULL, 0)) {
+        rx_log(LOG_INFO, "skipping session %s: TryExec %s was not found", path,
+               try_exec);
+        free(name);
+        free(exec);
+        free(comment);
+        free(icon);
+        free(try_exec);
         free(desktop_names);
         return false;
     }
@@ -206,11 +225,13 @@ parse_desktop_file(const char *path, Session *session)
                                      path, &argv, &argc);
     free(name_unescaped);
     if (!parsed || argc == 0) {
+        rx_log(LOG_WARNING, "skipping session %s: invalid Exec line", path);
         free(id_copy);
         free(name);
         free(exec);
         free(comment);
         free(icon);
+        free(try_exec);
         free(desktop_names);
         return false;
     }
@@ -224,6 +245,7 @@ parse_desktop_file(const char *path, Session *session)
     session->argv = argv;
     session->argc = argc;
     free(icon);
+    free(try_exec);
     return true;
 }
 
@@ -284,12 +306,12 @@ load_dir(SessionList *list, const char *dir)
 }
 
 void
-sessions_load(SessionList *list)
+sessions_load(SessionList *list, const char *dirs_override)
 {
     list->items = NULL;
     list->count = 0;
     struct string_list dirs = { 0 };
-    add_search_dirs(&dirs);
+    add_search_dirs(&dirs, dirs_override);
     for (size_t i = 0; i < dirs.count; i++) {
         load_dir(list, dirs.items[i]);
     }

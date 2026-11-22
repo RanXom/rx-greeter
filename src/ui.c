@@ -14,7 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -22,19 +24,10 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+static void layout(Ui *ui, int64_t now);
+
 static const char *const power_actions[] = { "poweroff", "reboot", "suspend" };
 static const char *const power_labels[] = { "poweroff", "reboot", "suspend" };
-
-static void
-log_warn(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    fputs("rx-greeter: ", stderr);
-    vfprintf(stderr, fmt, args);
-    fputc('\n', stderr);
-    va_end(args);
-}
 
 static void
 mark_dirty(Ui *ui)
@@ -244,12 +237,12 @@ resolve_font_family(const char *requested, const char *fallback)
     }
     if (fallback && family_available(fallback)) {
         if (requested && *requested) {
-            log_warn("font '%s' is unavailable; using '%s'", requested, fallback);
+            rx_log(LOG_WARNING, "font '%s' is unavailable; using '%s'", requested, fallback);
         }
         return xstrdup(fallback);
     }
     if (requested && *requested) {
-        log_warn("font '%s' is unavailable; using fontconfig default", requested);
+        rx_log(LOG_WARNING, "font '%s' is unavailable; using fontconfig default", requested);
     }
     return xstrdup("sans");
 }
@@ -273,9 +266,17 @@ load_background(Ui *ui)
     if (config->background_image && *config->background_image) {
         candidates[count++] = config->background_image;
     }
-    candidates[count++] = "/home/ranxom/.cache/swaylock-bg.png";
+    const char *home = getenv("HOME");
+    char home_background[4096];
+    if (home && *home) {
+        snprintf(home_background, sizeof(home_background),
+                 "%s/.cache/swaylock-bg.png", home);
+        candidates[count++] = home_background;
+    }
     candidates[count++] = "/var/lib/rx-greeter/background.png";
     candidates[count++] = "/etc/rx-greeter/background.png";
+    candidates[count++] = "/usr/local/share/rx-greeter/background.png";
+    candidates[count++] = "/usr/share/rx-greeter/background.png";
 
     for (size_t i = 0; i < count; i++) {
         const char *path = candidates[i];
@@ -299,7 +300,7 @@ load_background(Ui *ui)
     const char *wanted = config->background_image && *config->background_image
                              ? config->background_image
                              : "(none)";
-    log_warn("background image '%s' is not readable; using background color", wanted);
+    rx_log(LOG_WARNING, "background image '%s' is not readable; using background color", wanted);
 }
 
 static bool
@@ -439,7 +440,18 @@ show_message(Ui *ui, UiMessageKind kind, const char *message)
 {
     snprintf(ui->message, sizeof(ui->message), "%s", message ? message : "");
     ui->message_kind = kind;
+    ui->debug_dirty = true;
     mark_dirty(ui);
+}
+
+static void
+clear_error_message(Ui *ui)
+{
+    if (ui->message_kind == UI_MESSAGE_ERROR) {
+        ui->message[0] = '\0';
+        ui->message_kind = UI_MESSAGE_NONE;
+        ui->debug_dirty = true;
+    }
 }
 
 static void
@@ -474,6 +486,8 @@ trigger_login_error(Ui *ui, const char *message)
 static void
 auth_error(Ui *ui, const char *message)
 {
+    rx_log(LOG_WARNING, "authentication failed: %s",
+           message && *message ? message : "unknown error");
     gd_close(&ui->greetd);
     trigger_login_error(ui,
                         message && *message ? message : "Authentication failed");
@@ -545,6 +559,8 @@ start_session_if_ready(Ui *ui)
         auth_error(ui, error);
         return;
     }
+    rx_log(LOG_INFO, "starting session '%s' as '%s'", session->name,
+           selected_user(ui));
     ui->start_sent = true;
     ui->phase = UI_PHASE_STARTING;
     ui->prompt[0] = '\0';
@@ -699,23 +715,6 @@ ui_greetd_readable(Ui *ui)
     }
 }
 
-static bool
-has_control(const Ui *ui, struct xkb_state *xkb_state)
-{
-    (void)ui;
-    return xkb_state &&
-           xkb_state_mod_name_is_active(xkb_state, XKB_MOD_NAME_CTRL,
-                                        XKB_STATE_MODS_EFFECTIVE) > 0;
-}
-
-static bool
-has_shift(struct xkb_state *xkb_state)
-{
-    return xkb_state &&
-           xkb_state_mod_name_is_active(xkb_state, XKB_MOD_NAME_SHIFT,
-                                        XKB_STATE_MODS_EFFECTIVE) > 0;
-}
-
 static void
 cycle_user(Ui *ui, int direction)
 {
@@ -723,7 +722,11 @@ cycle_user(Ui *ui, int direction)
         return;
     }
     int count = (int)ui->users.count;
-    ui->user_index = (ui->user_index + direction + count) % count;
+    if (ui->user_index < 0) {
+        ui->user_index = direction > 0 ? 0 : count - 1;
+    } else {
+        ui->user_index = (ui->user_index + direction + count) % count;
+    }
     mark_debug(ui);
 }
 
@@ -745,6 +748,34 @@ cycle_power(Ui *ui, int direction)
     mark_debug(ui);
 }
 
+static char *
+resolve_power_helper(Ui *ui)
+{
+    const char *env_helper = getenv("RX_GREETER_POWER");
+    if (env_helper && *env_helper) {
+        return path_is_executable(env_helper) ? xstrdup(env_helper) : NULL;
+    }
+    if (ui->config->power_helper && *ui->config->power_helper) {
+        return path_is_executable(ui->config->power_helper)
+                   ? xstrdup(ui->config->power_helper)
+                   : NULL;
+    }
+    char *sibling = find_sibling_executable(NULL, "rx-greeter-power");
+    if (sibling) {
+        return sibling;
+    }
+    static const char *const candidates[] = {
+        "/usr/local/libexec/rx-greeter-power",
+        "/usr/libexec/rx-greeter-power",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (path_is_executable(candidates[i])) {
+            return xstrdup(candidates[i]);
+        }
+    }
+    return NULL;
+}
+
 static void
 spawn_power_action(Ui *ui, int action_index)
 {
@@ -755,25 +786,16 @@ spawn_power_action(Ui *ui, int action_index)
         return;
     }
     const char *action = power_actions[action_index];
-    const char *env_helper = getenv("RX_GREETER_POWER");
-    const char *helper = env_helper && *env_helper ? env_helper : ui->config->power_helper;
-    char *sibling = NULL;
-    if (!helper || !path_is_executable(helper)) {
-        sibling = find_sibling_executable(NULL, "rx-greeter-power");
-        if (sibling) {
-            helper = sibling;
-        }
-    }
-    if (!helper || !path_is_executable(helper)) {
+    char *helper = resolve_power_helper(ui);
+    if (!helper) {
         show_status_timed(ui, UI_MESSAGE_ERROR, "Power helper not found", 4000);
-        free(sibling);
         return;
     }
 
     pid_t pid = fork();
     if (pid < 0) {
         show_status_timed(ui, UI_MESSAGE_ERROR, "Cannot start power helper", 4000);
-        free(sibling);
+        free(helper);
         return;
     }
     if (pid == 0) {
@@ -797,7 +819,7 @@ spawn_power_action(Ui *ui, int action_index)
         snprintf(status, sizeof(status), "Requesting %s...", action);
         show_status_timed(ui, UI_MESSAGE_INFO, status, 4000);
     }
-    free(sibling);
+    free(helper);
     mark_debug(ui);
 }
 
@@ -821,6 +843,7 @@ handle_key_idle(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl,
             set_focus(ui, UI_FOCUS_PASSWORD);
         } else if (!password_is_empty(&ui->password)) {
             password_clear(&ui->password);
+            clear_error_message(ui);
             mark_debug(ui);
         }
         return;
@@ -867,6 +890,7 @@ handle_key_idle(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl,
     case XKB_KEY_BackSpace:
         if (ui->focus == UI_FOCUS_PASSWORD) {
             password_backspace(&ui->password);
+            clear_error_message(ui);
             mark_debug(ui);
         }
         return;
@@ -877,6 +901,7 @@ handle_key_idle(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl,
     if (ctrl && (sym == XKB_KEY_u || sym == XKB_KEY_U)) {
         password_clear(&ui->password);
         set_focus(ui, UI_FOCUS_PASSWORD);
+        clear_error_message(ui);
         mark_debug(ui);
         return;
     }
@@ -891,8 +916,12 @@ handle_key_idle(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl,
     if (ui->focus != UI_FOCUS_PASSWORD) {
         set_focus(ui, UI_FOCUS_PASSWORD);
     }
-    password_append(&ui->password, text, strlen(text));
+    if (!password_append(&ui->password, text, strlen(text))) {
+        show_message(ui, UI_MESSAGE_INFO, "Password is too long");
+        return;
+    }
     ui->error_active = false;
+    clear_error_message(ui);
     mark_debug(ui);
 }
 
@@ -914,6 +943,7 @@ handle_key_input(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl)
         return;
     case XKB_KEY_BackSpace:
         password_backspace(&ui->password);
+        clear_error_message(ui);
         mark_debug(ui);
         return;
     default:
@@ -921,6 +951,7 @@ handle_key_input(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl)
     }
     if (ctrl && (sym == XKB_KEY_u || sym == XKB_KEY_U)) {
         password_clear(&ui->password);
+        clear_error_message(ui);
         mark_debug(ui);
         return;
     }
@@ -931,8 +962,25 @@ handle_key_input(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl)
     if (first < 0x20 || first == 0x7f) {
         return;
     }
-    password_append(&ui->password, text, strlen(text));
+    if (!password_append(&ui->password, text, strlen(text))) {
+        show_message(ui, UI_MESSAGE_INFO, "Password is too long");
+        return;
+    }
+    clear_error_message(ui);
     mark_debug(ui);
+}
+
+void
+ui_set_output_info(Ui *ui, int count, const char *primary,
+                   int scale_120, int width, int height)
+{
+    ui->output_count = count;
+    snprintf(ui->primary_output, sizeof(ui->primary_output), "%s",
+             primary ? primary : "");
+    ui->output_scale_120 = scale_120;
+    ui->output_width = width;
+    ui->output_height = height;
+    ui->debug_dirty = true;
 }
 
 void
@@ -945,20 +993,10 @@ ui_set_caps_lock(Ui *ui, bool caps_lock)
 }
 
 void
-ui_key(Ui *ui, xkb_keysym_t sym, xkb_keycode_t keycode,
-       struct xkb_state *xkb_state, bool pressed, bool repeat)
+ui_key(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl, bool shift)
 {
-    (void)keycode;
-    (void)repeat;
-    if (!pressed || ui->quit || ui->phase == UI_PHASE_FINISHED) {
+    if (ui->quit || ui->phase == UI_PHASE_FINISHED) {
         return;
-    }
-
-    if (xkb_state) {
-        bool caps = xkb_state_mod_name_is_active(
-                        xkb_state, XKB_MOD_NAME_CAPS,
-                        XKB_STATE_MODS_LOCKED) > 0;
-        ui_set_caps_lock(ui, caps);
     }
 
     if (sym == XKB_KEY_F10) {
@@ -984,21 +1022,12 @@ ui_key(Ui *ui, xkb_keysym_t sym, xkb_keycode_t keycode,
         return;
     }
     if (ui->phase == UI_PHASE_INPUT) {
-        char text[64] = { 0 };
-        if (xkb_state) {
-            xkb_state_key_get_utf8(xkb_state, keycode, text, sizeof(text));
-        }
-        handle_key_input(ui, sym, text, has_control(ui, xkb_state));
+        handle_key_input(ui, sym, text, ctrl);
         mark_dirty(ui);
         return;
     }
 
-    char text[64] = { 0 };
-    if (xkb_state) {
-        xkb_state_key_get_utf8(xkb_state, keycode, text, sizeof(text));
-    }
-    bool shift = has_shift(xkb_state);
-    handle_key_idle(ui, sym, text, has_control(ui, xkb_state), shift);
+    handle_key_idle(ui, sym, text, ctrl, shift);
     mark_dirty(ui);
 }
 
@@ -1035,11 +1064,17 @@ ui_pointer_leave(Ui *ui)
 }
 
 void
-ui_pointer_button(Ui *ui, double x, double y, uint32_t button, bool pressed)
+ui_pointer_button(Ui *ui, double x, double y, int width, int height,
+                  uint32_t button, bool pressed)
 {
     if (!pressed || button != BTN_LEFT || ui->quit) {
         return;
     }
+    if (width > 0 && height > 0) {
+        ui->width = width;
+        ui->height = height;
+    }
+    layout(ui, now_ms());
     ui->pointer_button_count++;
     ui->pointer_x = x;
     ui->pointer_y = y;
@@ -1139,13 +1174,33 @@ static void
 layout(Ui *ui, int64_t now)
 {
     Config *config = ui->config;
+    if (ui->width <= 0 || ui->height <= 0) {
+        return;
+    }
+    const double margin = 20.0;
+    double field_w = fmin(config->box_width,
+                          fmax(1.0, (double)ui->width - 2.0 * margin));
+    double field_h = fmin(config->box_height,
+                          fmax(1.0, (double)ui->height - 2.0 * margin));
     double cx = ui->width / 2.0 + config->box_x;
     double cy = ui->height / 2.0 + config->box_y;
+    double min_cx = margin + field_w / 2.0;
+    double max_cx = ui->width - margin - field_w / 2.0;
+    double min_cy = margin + field_h / 2.0;
+    double max_cy = ui->height - margin - field_h / 2.0;
+    if (max_cx < min_cx) {
+        max_cx = min_cx;
+    }
+    if (max_cy < min_cy) {
+        max_cy = min_cy;
+    }
+    cx = fmin(fmax(cx, min_cx), max_cx);
+    cy = fmin(fmax(cy, min_cy), max_cy);
     ui->field_rect = (UiRect){
-        cx - config->box_width / 2.0,
-        cy - config->box_height / 2.0,
-        config->box_width,
-        config->box_height,
+        cx - field_w / 2.0,
+        cy - field_h / 2.0,
+        field_w,
+        field_h,
     };
 
     ui->user_height = layout_user_height(ui, now);
@@ -1246,16 +1301,18 @@ draw_clock(Ui *ui, cairo_t *cr, double alpha)
         double date_size = ui->config->date_font_size;
         double total = time_size + 8.0 + date_size;
         double top = cy - total / 2.0;
-        draw_text_center(cr, cx, top + time_size / 2.0, time_text, family,
-                         time_size, ui->config->clock_color, alpha);
+        draw_text_elided(cr, cx, top + time_size / 2.0, time_text,
+                         (double)ui->width - 40.0, family, time_size,
+                         ui->config->clock_color, alpha);
         Rgba date_color = ui->config->clock_color;
         date_color.a *= 0.7;
-        draw_text_center(cr, cx, top + time_size + 8.0 + date_size / 2.0,
-                         date_text, family, date_size, date_color, alpha);
+        draw_text_elided(cr, cx, top + time_size + 8.0 + date_size / 2.0,
+                         date_text, (double)ui->width - 40.0, family,
+                         date_size, date_color, alpha);
     } else {
-        draw_text_center(cr, cx, cy, time_text, family,
-                         ui->config->clock_font_size, ui->config->clock_color,
-                         alpha);
+        draw_text_elided(cr, cx, cy, time_text, (double)ui->width - 40.0,
+                         family, ui->config->clock_font_size,
+                         ui->config->clock_color, alpha);
     }
 }
 
@@ -1282,10 +1339,24 @@ draw_caps_lock(Ui *ui, cairo_t *cr, double alpha)
     if (!ui->config->show_caps_lock_indicator || !ui->caps_lock) {
         return;
     }
-    draw_text_right(cr, ui->field_rect.x - 15.0,
-                    ui->field_rect.y + ui->field_rect.h / 2.0, "CAPS LOCK",
-                    ui->resolved_font, ui->config->caps_lock_font_size,
-                    ui->config->caps_lock_color, alpha);
+    double size = ui->config->caps_lock_font_size;
+    double width = text_width(cr, "CAPS LOCK", ui->resolved_font, size);
+    double cy = ui->field_rect.y + ui->field_rect.h / 2.0;
+    if (ui->field_rect.x - 15.0 - width >= 10.0) {
+        draw_text_right(cr, ui->field_rect.x - 15.0, cy, "CAPS LOCK",
+                        ui->resolved_font, size,
+                        ui->config->caps_lock_color, alpha);
+    } else if (ui->field_rect.x + ui->field_rect.w + 15.0 + width <=
+               ui->width - 10.0) {
+        draw_text_left(cr, ui->field_rect.x + ui->field_rect.w + 15.0, cy,
+                       "CAPS LOCK", ui->resolved_font, size,
+                       ui->config->caps_lock_color, alpha);
+    } else {
+        draw_text_center(cr, ui->field_rect.x + ui->field_rect.w / 2.0,
+                         ui->field_rect.y - 14.0, "CAPS LOCK",
+                         ui->resolved_font, size,
+                         ui->config->caps_lock_color, alpha);
+    }
 }
 
 static void
@@ -1300,7 +1371,7 @@ draw_dots(Ui *ui, cairo_t *cr, double alpha, double cx, double cy)
     }
     double spacing = ui->config->dot_spacing;
     if (count > 1) {
-        double fit = (ui->config->box_width - 12.0) / (double)(count - 1);
+        double fit = (ui->field_rect.w - 12.0) / (double)(count - 1);
         if (fit < spacing) {
             spacing = fmax(2.0, fit);
         }
@@ -1403,8 +1474,9 @@ draw_prompt_and_status(Ui *ui, cairo_t *cr, double alpha)
     if (ui->prompt[0] &&
         (ui->phase == UI_PHASE_CONNECTING || ui->phase == UI_PHASE_WAITING ||
          ui->phase == UI_PHASE_INPUT)) {
-        draw_text_center(cr, ui->field_rect.x + ui->field_rect.w / 2.0,
-                         ui->field_rect.y - 14.0, ui->prompt, ui->resolved_font,
+        draw_text_elided(cr, ui->field_rect.x + ui->field_rect.w / 2.0,
+                         ui->field_rect.y - 14.0, ui->prompt,
+                         (double)ui->width - 40.0, ui->resolved_font,
                          ui->config->font_size * 0.85, ui->config->text_color,
                          alpha * 0.75);
     }
@@ -1419,8 +1491,12 @@ draw_prompt_and_status(Ui *ui, cairo_t *cr, double alpha)
         }
         double y = ui->field_rect.y + ui->field_rect.h +
                    ui->config->element_spacing + ui->below_height + 10.0;
-        draw_text_center(cr, ui->field_rect.x + ui->field_rect.w / 2.0, y,
-                         ui->message, ui->resolved_font,
+        if (y > ui->height - 12.0) {
+            y = ui->field_rect.y - 14.0;
+        }
+        draw_text_elided(cr, ui->field_rect.x + ui->field_rect.w / 2.0, y,
+                         ui->message, (double)ui->width - 40.0,
+                         ui->resolved_font,
                          ui->config->selector_preview_font_size, color, alpha);
     }
 }
@@ -1457,7 +1533,8 @@ draw_selector_row(Ui *ui, cairo_t *cr, double alpha, UiRect row,
 static void
 draw_previews(Ui *ui, cairo_t *cr, double alpha, int64_t now)
 {
-    if (!ui->config->show_selector_preview || ui->phase != UI_PHASE_IDLE) {
+    if (!ui->config->show_selector_preview || ui->phase != UI_PHASE_IDLE ||
+        ui->message[0]) {
         return;
     }
     (void)now;
@@ -1650,6 +1727,24 @@ debug_write(Ui *ui)
                            json_object_new_string(ui->config->theme_path
                                                       ? ui->config->theme_path
                                                       : ""));
+    json_object_object_add(object, "config_path",
+                           json_object_new_string(ui->config->config_path
+                                                      ? ui->config->config_path
+                                                      : ""));
+    json_object_object_add(object, "output_name",
+                           json_object_new_string(ui->config->output_name
+                                                      ? ui->config->output_name
+                                                      : ""));
+    json_object_object_add(object, "outputs",
+                           json_object_new_int(ui->output_count));
+    json_object_object_add(object, "primary_output",
+                           json_object_new_string(ui->primary_output));
+    json_object_object_add(object, "output_scale_120",
+                           json_object_new_int(ui->output_scale_120));
+    json_object_object_add(object, "output_width",
+                           json_object_new_int(ui->output_width));
+    json_object_object_add(object, "output_height",
+                           json_object_new_int(ui->output_height));
     json_object_object_add(object, "font",
                            json_object_new_string(ui->resolved_font
                                                       ? ui->resolved_font
@@ -1673,6 +1768,7 @@ debug_write(Ui *ui)
              (long)getpid());
     FILE *file = fopen(temp_path, "w");
     if (file) {
+        (void)fchmod(fileno(file), 0600);
         const char *text = json_object_to_json_string_ext(
             object, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
         fputs(text, file);
@@ -1709,12 +1805,35 @@ ui_create(Config *config, const char *debug_status_path)
         }
     }
     if (ui->user_index < 0 && ui->users.count > 0) {
-        ui->user_index = 0;
+        if (config->default_user && *config->default_user) {
+            rx_log(LOG_WARNING,
+                   "configured default_user is not in the selectable user list: %s",
+                   config->default_user);
+        } else {
+            ui->user_index = 0;
+        }
     }
 
-    sessions_load(&ui->sessions);
+    sessions_load(&ui->sessions, config->session_dirs);
     ui->session_index = sessions_default_index(&ui->sessions,
                                                config->default_session);
+    if (config->default_session && *config->default_session &&
+        ui->sessions.count > 0) {
+        bool matched = false;
+        for (size_t i = 0; i < ui->sessions.count; i++) {
+            if (str_ieq(ui->sessions.items[i].id, config->default_session) ||
+                str_ieq(ui->sessions.items[i].name, config->default_session)) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            rx_log(LOG_WARNING,
+                   "configured default_session was not found: %s; using %s",
+                   config->default_session,
+                   ui->sessions.items[ui->session_index].name);
+        }
+    }
 
     ui->resolved_font = resolve_font_family(config->font_family,
                                             config->fallback_font_family);
@@ -1941,6 +2060,7 @@ ui_tick(Ui *ui)
         mark_dirty(ui);
     }
     if (ui->debug_dirty) {
+        layout(ui, now);
         debug_write(ui);
     }
 }

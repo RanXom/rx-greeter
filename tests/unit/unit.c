@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <fcntl.h>
 
 static int failures = 0;
 
@@ -63,6 +65,24 @@ test_colors(void)
 }
 
 static void
+test_paths(void)
+{
+    setenv("HOME", "/home/example", 1);
+    char *expanded = expand_path("~/.cache/wall.png");
+    EXPECT(expanded && strcmp(expanded, "/home/example/.cache/wall.png") == 0);
+    free(expanded);
+    expanded = expand_path("$HOME/wall.png");
+    EXPECT(expanded && strcmp(expanded, "/home/example/wall.png") == 0);
+    free(expanded);
+    expanded = expand_path("${HOME}/wall.png");
+    EXPECT(expanded && strcmp(expanded, "/home/example/wall.png") == 0);
+    free(expanded);
+    expanded = expand_path("/absolute/wall.png");
+    EXPECT(expanded && strcmp(expanded, "/absolute/wall.png") == 0);
+    free(expanded);
+}
+
+static void
 test_config(void)
 {
     char dir[] = "/tmp/rx-greeter-unit-XXXXXX";
@@ -98,11 +118,11 @@ test_config(void)
 
     Config config;
     config_init(&config);
-    EXPECT(strcmp(config.default_user, "ranxom") == 0);
+    EXPECT(strcmp(config.default_user, "") == 0);
     EXPECT(near(config.background_color.r, 0x12 / 255.0));
-    EXPECT(strcmp(config.font_family, "IosevkaTerm Nerd Font Mono") == 0);
+    EXPECT(strcmp(config.font_family, "monospace") == 0);
 
-    EXPECT(config_load_file(&config, path));
+    EXPECT(config_load_file(&config, path, true));
     EXPECT(near(config.background_color.r, 1 / 255.0));
     EXPECT(near(config.surface_opacity, 0.5));
     EXPECT(near(config.box_width, 300));
@@ -118,7 +138,7 @@ test_config(void)
     EXPECT(strcmp(config.default_session, "Sway") == 0);
     EXPECT(config.allow_empty_password);
     EXPECT(config.power_dry_run);
-    EXPECT(config.theme_path && strcmp(config.theme_path, path) == 0);
+    EXPECT(config.theme_path == NULL);
 
     config_apply_line(&config, "surface_opacity = nope");
     EXPECT(near(config.surface_opacity, 0.5));
@@ -127,11 +147,12 @@ test_config(void)
 
     config_free(&config);
 
-    setenv("RX_GREETER_THEME", path, 1);
-    char *found = config_find_theme_path(NULL);
+    char *found = config_find_theme_path(path);
     EXPECT(found && strcmp(found, path) == 0);
     free(found);
-    unsetenv("RX_GREETER_THEME");
+    found = config_find_config_path(path);
+    EXPECT(found && strcmp(found, path) == 0);
+    free(found);
 
     char missing[512];
     snprintf(missing, sizeof(missing), "%s/missing.conf", dir);
@@ -204,7 +225,7 @@ test_sessions(void)
     write_text(path,
                "[Desktop Entry]\n"
                "Name=Sway Local\n"
-               "Exec=/home/ranxom/.local/bin/sway-session\n"
+               "Exec=/usr/bin/sway-session\n"
                "DesktopNames=sway;wlroots\n"
                "Type=Application\n");
     snprintf(path, sizeof(path), "%s/sway.desktop", system_dir);
@@ -225,13 +246,18 @@ test_sessions(void)
                "Name=Hidden\n"
                "Exec=hidden\n"
                "Hidden=true\n");
+    snprintf(path, sizeof(path), "%s/missing-tryexec.desktop", system_dir);
+    write_text(path,
+               "[Desktop Entry]\n"
+               "Name=Missing\n"
+               "Exec=missing\n"
+               "TryExec=/definitely/not/here\n");
 
     char dirs[1024];
     snprintf(dirs, sizeof(dirs), "%s:%s", local, system_dir);
-    setenv("RX_GREETER_SESSION_DIRS", dirs, 1);
 
     SessionList list;
-    sessions_load(&list);
+    sessions_load(&list, dirs);
     EXPECT(list.count == 2);
     EXPECT(strcmp(list.items[0].id, "sway") == 0);
     EXPECT(strcmp(list.items[0].name, "Sway Local") == 0);
@@ -241,7 +267,7 @@ test_sessions(void)
     EXPECT(sessions_default_index(&list, "missing") == 0);
     EXPECT(list.items[0].argc == 1);
     EXPECT(strcmp(list.items[0].argv[0],
-                  "/home/ranxom/.local/bin/sway-session") == 0);
+                  "/usr/bin/sway-session") == 0);
     EXPECT(list.items[1].argc == 3);
     EXPECT(strcmp(list.items[1].argv[0], "dbus-run-session") == 0);
 
@@ -263,7 +289,6 @@ test_sessions(void)
     session_free_env(env, env_count);
 
     sessions_free(&list);
-    unsetenv("RX_GREETER_SESSION_DIRS");
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", root);
     EXPECT(system(cmd) == 0);
 }
@@ -293,6 +318,35 @@ test_password(void)
     for (size_t i = 0; i < sizeof(buffer.data); i++) {
         EXPECT(buffer.data[i] == 0);
     }
+}
+
+static void
+test_greetd_frames(void)
+{
+    int fds[2];
+    EXPECT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    int flags = fcntl(fds[0], F_GETFL, 0);
+    EXPECT(flags >= 0);
+    EXPECT(fcntl(fds[0], F_SETFL, flags | O_NONBLOCK) == 0);
+
+    GdConn conn;
+    gd_init(&conn);
+    conn.fd = fds[0];
+    GdEvent event;
+    char error[256];
+
+    const char *json = "{\"type\":\"success\"}";
+    uint32_t len = (uint32_t)strlen(json);
+    EXPECT(write(fds[1], &len, 2) == 2);
+    EXPECT(gd_read(&conn, &event) == 0);
+    EXPECT(write(fds[1], (char *)&len + 2, 2) == 2);
+    EXPECT(write(fds[1], json, len) == (ssize_t)len);
+    EXPECT(gd_read(&conn, &event) == 1);
+    EXPECT(event.type == GD_EVENT_SUCCESS);
+
+    gd_close(&conn);
+    close(fds[1]);
+    (void)error;
 }
 
 static void
@@ -344,12 +398,14 @@ test_user_filters(void)
 int
 main(void)
 {
+    test_paths();
     test_colors();
     test_config();
     test_exec_parser();
     test_sessions();
     test_password();
     test_greetd_parser();
+    test_greetd_frames();
     test_user_filters();
 
     if (failures) {

@@ -25,6 +25,11 @@ char *read_file(const char *path, size_t max_size, size_t *out_size);
 bool path_is_readable(const char *path);
 bool path_is_executable(const char *path);
 char *find_sibling_executable(const char *argv0, const char *name);
+char *expand_path(const char *value);
+bool find_in_path(const char *name, char *out, size_t out_size);
+
+void rx_log_init(void);
+void rx_log(int priority, const char *fmt, ...);
 
 int64_t now_ms(void);
 void secure_clear(void *ptr, size_t len);

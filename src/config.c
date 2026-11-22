@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
 static Rgba
@@ -28,7 +29,7 @@ config_init(Config *config)
 {
     memset(config, 0, sizeof(*config));
 
-    config->background_image = xstrdup("/home/ranxom/.cache/swaylock-bg.png");
+    config->background_image = xstrdup("");
 
     /* The live waylock theme is the source of truth for these defaults. */
     config->background_color = rgba_hex(0x121415, 1.0);
@@ -48,8 +49,8 @@ config_init(Config *config)
     config->dot_spacing = 9.0;
     config->dot_radius = 2.4;
 
-    config->font_family = xstrdup("IosevkaTerm Nerd Font Mono");
-    config->fallback_font_family = xstrdup("IosevkaTerm Nerd Font Mono");
+    config->font_family = xstrdup("monospace");
+    config->fallback_font_family = xstrdup("sans");
     config->font_size = 16.0;
 
     config->fade_ms = 250;
@@ -90,8 +91,9 @@ config_init(Config *config)
     config->selector_arrow_width = 30.0;
     config->selector_radius = 10.0;
 
-    config->default_user = xstrdup("ranxom");
-    config->default_session = xstrdup("sway");
+    config->default_user = xstrdup("");
+    config->default_session = xstrdup("");
+    config->output_name = xstrdup("");
     config->allow_empty_password = false;
     config->clear_password_on_error = true;
     config->login_error_shake = true;
@@ -99,9 +101,11 @@ config_init(Config *config)
     config->error_hold_ms = 900;
     config->auth_timeout_ms = 30000;
 
-    config->power_helper = xstrdup("/usr/local/libexec/rx-greeter-power");
+    config->power_helper = xstrdup("");
     config->power_dry_run = false;
+    config->session_dirs = xstrdup("");
     config->theme_path = NULL;
+    config->config_path = NULL;
 }
 
 void
@@ -118,8 +122,11 @@ config_free(Config *config)
     free(config->clock_font_family);
     free(config->default_user);
     free(config->default_session);
+    free(config->output_name);
     free(config->power_helper);
+    free(config->session_dirs);
     free(config->theme_path);
+    free(config->config_path);
     memset(config, 0, sizeof(*config));
 }
 
@@ -149,6 +156,14 @@ set_string(char **slot, const char *value)
 {
     free(*slot);
     *slot = xstrdup(value);
+}
+
+static void
+set_string_expanded(char **slot, const char *value)
+{
+    char *expanded = expand_path(value);
+    free(*slot);
+    *slot = expanded ? expanded : xstrdup(value);
 }
 
 static bool
@@ -263,8 +278,8 @@ color_parse(const char *text, Rgba *out)
     return true;
 }
 
-bool
-config_apply_line(Config *config, const char *line)
+static bool
+config_apply_line_ex(Config *config, const char *line, bool warn_unknown)
 {
     if (!line) {
         return false;
@@ -290,9 +305,14 @@ config_apply_line(Config *config, const char *line)
     char key_norm[96];
     normalize_key(key, key_norm, sizeof(key_norm));
     bool used = true;
+    bool known = true;
 
     if (key_is(key_norm, "background_image")) {
-        set_string(&config->background_image, value);
+        set_string_expanded(&config->background_image, value);
+    } else if (key_is(key_norm, "theme_path")) {
+        set_string_expanded(&config->theme_path, value);
+    } else if (key_is(key_norm, "session_dirs")) {
+        set_string_expanded(&config->session_dirs, value);
     } else if (key_is(key_norm, "background_color")) {
         used = value_color(value, &config->background_color);
     } else if (key_is(key_norm, "background_overlay")) {
@@ -407,6 +427,8 @@ config_apply_line(Config *config, const char *line)
         set_string(&config->default_user, value);
     } else if (key_is(key_norm, "default_session")) {
         set_string(&config->default_session, value);
+    } else if (key_is(key_norm, "output") || key_is(key_norm, "output_name")) {
+        set_string(&config->output_name, value);
     } else if (key_is(key_norm, "allow_empty_password")) {
         used = value_bool(value, &config->allow_empty_password);
     } else if (key_is(key_norm, "clear_password_on_error")) {
@@ -420,23 +442,27 @@ config_apply_line(Config *config, const char *line)
     } else if (key_is(key_norm, "auth_timeout_ms")) {
         used = value_int(value, 1000, 600000, &config->auth_timeout_ms);
     } else if (key_is(key_norm, "power_helper")) {
-        set_string(&config->power_helper, value);
+        set_string_expanded(&config->power_helper, value);
     } else if (key_is(key_norm, "power_dry_run")) {
         used = value_bool(value, &config->power_dry_run);
     } else {
         used = false;
-        fprintf(stderr, "rx-greeter: unknown theme key '%s'\n", key);
+        known = false;
     }
 
-    if (!used) {
-        fprintf(stderr, "rx-greeter: invalid value for '%s': %s\n", key, value);
+    if (warn_unknown) {
+        if (!known) {
+            rx_log(LOG_WARNING, "unknown configuration key '%s'", key);
+        } else if (!used) {
+            rx_log(LOG_WARNING, "invalid value for '%s': %s", key, value);
+        }
     }
     free(copy);
     return true;
 }
 
 bool
-config_load_file(Config *config, const char *path)
+config_load_file(Config *config, const char *path, bool warn_unknown)
 {
     char *data = read_file(path, 256 * 1024, NULL);
     if (!data) {
@@ -449,12 +475,67 @@ config_load_file(Config *config, const char *path)
         if (len && line[len - 1] == '\r') {
             line[len - 1] = '\0';
         }
-        config_apply_line(config, line);
+        config_apply_line_ex(config, line, warn_unknown);
     }
     free(data);
-    free(config->theme_path);
-    config->theme_path = xstrdup(path);
     return true;
+}
+
+bool
+config_apply_line(Config *config, const char *line)
+{
+    return config_apply_line_ex(config, line, true);
+}
+
+static char *
+find_first_readable(const char *const *paths, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (path_is_readable(paths[i])) {
+            return xstrdup(paths[i]);
+        }
+    }
+    return NULL;
+}
+
+char *
+config_find_config_path(const char *explicit_path)
+{
+    if (explicit_path && *explicit_path) {
+        return path_is_readable(explicit_path) ? xstrdup(explicit_path) : NULL;
+    }
+    const char *env = getenv("RX_GREETER_CONFIG");
+    if (env && *env) {
+        return path_is_readable(env) ? xstrdup(env) : NULL;
+    }
+
+    static const char *const system_paths[] = {
+        "/etc/rx-greeter/config.conf",
+        "/var/lib/rx-greeter/config.conf",
+        "/usr/local/etc/rx-greeter/config.conf",
+    };
+    char *found = find_first_readable(system_paths,
+                                      sizeof(system_paths) / sizeof(system_paths[0]));
+    if (found) {
+        return found;
+    }
+
+    char candidate[4096];
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) {
+        snprintf(candidate, sizeof(candidate), "%s/rx-greeter/config.conf", xdg);
+        if (path_is_readable(candidate)) {
+            return xstrdup(candidate);
+        }
+    }
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        snprintf(candidate, sizeof(candidate), "%s/.config/rx-greeter/config.conf", home);
+        if (path_is_readable(candidate)) {
+            return xstrdup(candidate);
+        }
+    }
+    return NULL;
 }
 
 char *
@@ -467,6 +548,19 @@ config_find_theme_path(const char *explicit_path)
     const char *env = getenv("RX_GREETER_THEME");
     if (env && *env) {
         return path_is_readable(env) ? xstrdup(env) : NULL;
+    }
+
+    static const char *const system_paths[] = {
+        "/etc/rx-greeter/theme.conf",
+        "/var/lib/rx-greeter/theme.conf",
+        "/usr/local/etc/rx-greeter/theme.conf",
+        "/usr/local/share/rx-greeter/theme.conf",
+        "/usr/share/rx-greeter/theme.conf",
+    };
+    char *found = find_first_readable(system_paths,
+                                      sizeof(system_paths) / sizeof(system_paths[0]));
+    if (found) {
+        return found;
     }
 
     char candidate[4096];
@@ -482,17 +576,6 @@ config_find_theme_path(const char *explicit_path)
         snprintf(candidate, sizeof(candidate), "%s/.config/rx-greeter/theme.conf", home);
         if (path_is_readable(candidate)) {
             return xstrdup(candidate);
-        }
-    }
-
-    static const char *const system_paths[] = {
-        "/etc/rx-greeter/theme.conf",
-        "/var/lib/rx-greeter/theme.conf",
-        "/usr/local/etc/rx-greeter/theme.conf",
-    };
-    for (size_t i = 0; i < sizeof(system_paths) / sizeof(system_paths[0]); i++) {
-        if (path_is_readable(system_paths[i])) {
-            return xstrdup(system_paths[i]);
         }
     }
     return NULL;
@@ -512,6 +595,7 @@ void
 config_print(const Config *config)
 {
     printf("# rx-greeter effective configuration\n");
+    printf("config_path=%s\n", config->config_path ? config->config_path : "(none)");
     printf("theme_path=%s\n", config->theme_path ? config->theme_path : "(built-in defaults)");
     printf("background_image=%s\n", config->background_image ? config->background_image : "");
     print_color("background_color", config->background_color);
@@ -552,6 +636,8 @@ config_print(const Config *config)
     printf("show_selector_preview=%s\n", config->show_selector_preview ? "true" : "false");
     printf("default_user=%s\n", config->default_user);
     printf("default_session=%s\n", config->default_session);
+    printf("output_name=%s\n", config->output_name);
+    printf("session_dirs=%s\n", config->session_dirs);
     printf("allow_empty_password=%s\n", config->allow_empty_password ? "true" : "false");
     printf("clear_password_on_error=%s\n", config->clear_password_on_error ? "true" : "false");
     printf("login_error_shake=%s\n", config->login_error_shake ? "true" : "false");

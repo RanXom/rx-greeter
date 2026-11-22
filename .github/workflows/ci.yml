@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libwayland-dev libwayland-bin wayland-protocols \
+            libcairo2-dev libxkbcommon-dev libjson-c-dev libfontconfig1-dev
+      - name: Build
+        run: make -j"$(nproc)"
+      - name: Unit tests
+        run: make check
+
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libwayland-dev libwayland-bin wayland-protocols \
+            libcairo2-dev libxkbcommon-dev libjson-c-dev libfontconfig1-dev \
+            sway grim python3 dbus
+      - name: Headless Sway integration
+        run: make integration
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: build/test-artifacts
+          if-no-files-found: ignore

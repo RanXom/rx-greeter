@@ -81,6 +81,7 @@ typedef struct {
     /* Login behaviour. */
     char *default_user;
     char *default_session;
+    char *output_name;
     bool allow_empty_password;
     bool clear_password_on_error;
     bool login_error_shake;
@@ -92,16 +93,21 @@ typedef struct {
     char *power_helper;
     bool power_dry_run;
 
-    /* Resolved at runtime, not a theme key. */
+    /* Session directory search path, colon separated. Empty = defaults. */
+    char *session_dirs;
+
+    /* Resolved at runtime, not theme keys. */
     char *theme_path;
+    char *config_path;
 } Config;
 
 void config_init(Config *config);
 void config_free(Config *config);
 
 bool config_apply_line(Config *config, const char *line);
-bool config_load_file(Config *config, const char *path);
+bool config_load_file(Config *config, const char *path, bool warn_unknown);
 char *config_find_theme_path(const char *explicit_path);
+char *config_find_config_path(const char *explicit_path);
 
 bool color_parse(const char *text, Rgba *out);
 void config_print(const Config *config);

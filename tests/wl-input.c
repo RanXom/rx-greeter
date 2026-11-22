@@ -331,7 +331,10 @@ type_text(struct InputApp *app, const char *text)
 static void
 set_caps_lock(struct InputApp *app, bool enabled)
 {
-    xkb_mod_mask_t caps = xkb_keymap_mod_get_mask(app->keymap, XKB_MOD_NAME_CAPS);
+    xkb_mod_index_t caps_index =
+        xkb_keymap_mod_get_index(app->keymap, XKB_MOD_NAME_CAPS);
+    xkb_mod_mask_t caps =
+        caps_index == XKB_MOD_INVALID ? 0 : ((xkb_mod_mask_t)1u << caps_index);
     xkb_mod_mask_t locked = enabled ? caps : 0;
     xkb_state_update_mask(app->xkb_state, 0, 0, locked, 0, 0, 0);
     emit_modifiers(app);

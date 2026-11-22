@@ -221,9 +221,20 @@ gd_send_cancel(GdConn *conn, char *error, size_t error_len)
 void
 gd_cancel_and_close(GdConn *conn)
 {
-    if (conn && conn->fd >= 0) {
-        char error[256];
-        (void)gd_send_cancel(conn, error, sizeof(error));
+    if (!conn || conn->fd < 0) {
+        return;
+    }
+    char error[256];
+    if (!gd_send_cancel(conn, error, sizeof(error))) {
+        gd_close(conn);
+        return;
+    }
+    /* Give greetd a brief chance to acknowledge the cancellation, but do not
+     * let a wedged daemon block the login screen. */
+    struct pollfd pfd = { .fd = conn->fd, .events = POLLIN };
+    if (poll(&pfd, 1, 250) > 0) {
+        GdEvent event;
+        (void)gd_read(conn, &event);
     }
     gd_close(conn);
 }
@@ -239,6 +250,18 @@ copy_string(char *dest, size_t dest_len, const char *src)
         return;
     }
     snprintf(dest, dest_len, "%s", src);
+}
+
+static const char *
+json_string_field(struct json_object *object, const char *key,
+                  const char *fallback)
+{
+    struct json_object *value = NULL;
+    if (json_object_object_get_ex(object, key, &value) &&
+        json_object_is_type(value, json_type_string)) {
+        return json_object_get_string(value);
+    }
+    return fallback;
 }
 
 bool
@@ -271,24 +294,16 @@ gd_parse_response(const char *json, GdEvent *event, char *error, size_t error_le
         event->type = GD_EVENT_SUCCESS;
     } else if (strcmp(type, "error") == 0) {
         event->type = GD_EVENT_ERROR;
-        struct json_object *error_type = NULL;
-        struct json_object *description = NULL;
-        json_object_object_get_ex(object, "error_type", &error_type);
-        json_object_object_get_ex(object, "description", &description);
         copy_string(event->error_type, sizeof(event->error_type),
-                    error_type ? json_object_get_string(error_type) : "error");
+                    json_string_field(object, "error_type", "error"));
         copy_string(event->description, sizeof(event->description),
-                    description ? json_object_get_string(description) : "");
+                    json_string_field(object, "description", ""));
     } else if (strcmp(type, "auth_message") == 0) {
         event->type = GD_EVENT_AUTH_MESSAGE;
-        struct json_object *message_type = NULL;
-        struct json_object *message = NULL;
-        json_object_object_get_ex(object, "auth_message_type", &message_type);
-        json_object_object_get_ex(object, "auth_message", &message);
         copy_string(event->auth_message_type, sizeof(event->auth_message_type),
-                    message_type ? json_object_get_string(message_type) : "info");
+                    json_string_field(object, "auth_message_type", "info"));
         copy_string(event->auth_message, sizeof(event->auth_message),
-                    message ? json_object_get_string(message) : "");
+                    json_string_field(object, "auth_message", ""));
     } else {
         char unknown[64];
         snprintf(unknown, sizeof(unknown), "%s", type);

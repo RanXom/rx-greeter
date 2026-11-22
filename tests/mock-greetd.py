@@ -9,6 +9,7 @@ Modes:
   visible : correct password -> visible "Verification code:" prompt,
             answer 123456 -> success
   hang    : never answer create_session; used to test Escape/cancel_session
+  info    : send an info message before the secret prompt
 """
 
 import argparse
@@ -82,14 +83,25 @@ class Mock:
                     if self.args.mode == "hang":
                         continue
                     time.sleep(self.args.delay_ms / 1000.0)
-                    send_message(
-                        conn,
-                        {
-                            "type": "auth_message",
-                            "auth_message_type": "secret",
-                            "auth_message": "Password:",
-                        },
-                    )
+                    if self.args.mode == "info":
+                        state["stage"] = "info"
+                        send_message(
+                            conn,
+                            {
+                                "type": "auth_message",
+                                "auth_message_type": "info",
+                                "auth_message": "Checking credentials",
+                            },
+                        )
+                    else:
+                        send_message(
+                            conn,
+                            {
+                                "type": "auth_message",
+                                "auth_message_type": "secret",
+                                "auth_message": "Password:",
+                            },
+                        )
                 elif kind == "post_auth_message_response":
                     response = request.get("response")
                     self.log(
@@ -110,6 +122,17 @@ class Mock:
                             },
                         )
                         break
+                    if state["stage"] == "info":
+                        state["stage"] = "password"
+                        send_message(
+                            conn,
+                            {
+                                "type": "auth_message",
+                                "auth_message_type": "secret",
+                                "auth_message": "Password:",
+                            },
+                        )
+                        continue
                     if state["stage"] == "password":
                         if response != self.args.password:
                             self.log({"event": "wrong_password"})
@@ -209,7 +232,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
     parser.add_argument("--password", default="correct horse")
-    parser.add_argument("--mode", choices=["success", "error", "visible", "hang"],
+    parser.add_argument("--mode", choices=["success", "error", "visible", "hang", "info"],
                         default="success")
     parser.add_argument("--log", required=True)
     parser.add_argument("--delay-ms", type=int, default=0)

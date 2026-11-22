@@ -12,3 +12,8 @@ vt = 7
 [default_session]
 command = "/usr/local/bin/rx-greeter-session"
 user = "greetd"
+
+# If the Matugen theme lives in a user's home and you do not install a system
+# /etc/rx-greeter/config.conf, point at the host config explicitly:
+#
+# command = "/usr/bin/env RX_GREETER_CONFIG=/home/ranxom/.config/rx-greeter/config.conf /usr/local/bin/rx-greeter-session"

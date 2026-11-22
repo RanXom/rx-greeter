@@ -118,6 +118,12 @@ typedef struct {
     bool debug_dirty;
     bool dirty;
     time_t last_clock;
+
+    int output_count;
+    char primary_output[64];
+    int output_scale_120;
+    int output_width;
+    int output_height;
 } Ui;
 
 Ui *ui_create(Config *config, const char *debug_status_path);
@@ -134,13 +140,16 @@ int ui_exit_code(const Ui *ui);
 int ui_greetd_fd(const Ui *ui);
 void ui_greetd_readable(Ui *ui);
 
-void ui_key(Ui *ui, xkb_keysym_t sym, xkb_keycode_t keycode,
-            struct xkb_state *xkb_state, bool pressed, bool repeat);
+void ui_key(Ui *ui, xkb_keysym_t sym, const char *text, bool ctrl, bool shift);
 void ui_set_caps_lock(Ui *ui, bool caps_lock);
 void ui_pointer_enter(Ui *ui, double x, double y);
 void ui_pointer_motion(Ui *ui, double x, double y);
 void ui_pointer_leave(Ui *ui);
-void ui_pointer_button(Ui *ui, double x, double y, uint32_t button, bool pressed);
+void ui_pointer_button(Ui *ui, double x, double y, int width, int height,
+                       uint32_t button, bool pressed);
+
+void ui_set_output_info(Ui *ui, int count, const char *primary,
+                        int scale_120, int width, int height);
 
 bool ui_show_cursor(const Ui *ui);
 int ui_poll_timeout_ms(const Ui *ui);

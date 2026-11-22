@@ -20,7 +20,7 @@ typedef struct {
     size_t count;
 } SessionList;
 
-void sessions_load(SessionList *list);
+void sessions_load(SessionList *list, const char *dirs_override);
 void sessions_free(SessionList *list);
 int sessions_default_index(const SessionList *list, const char *preferred);
 

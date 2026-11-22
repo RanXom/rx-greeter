@@ -17,6 +17,8 @@ WAYLAND_SCANNER ?= wayland-scanner
 INSTALL         ?= install
 PYTHON          ?= python3
 
+VERSION     ?= 1.0.0
+
 PREFIX      ?= /usr/local
 BINDIR      ?= $(PREFIX)/bin
 LIBEXECDIR  ?= $(PREFIX)/libexec
@@ -33,12 +35,15 @@ ifeq ($(WAYLAND_PROTOCOLS_DIR),)
 WAYLAND_PROTOCOLS_DIR := /usr/share/wayland-protocols
 endif
 XDG_SHELL_XML := $(WAYLAND_PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml
+LAYER_SHELL_XML := protocols/wlr-layer-shell-unstable-v1.xml
+FRACTIONAL_SCALE_XML := $(WAYLAND_PROTOCOLS_DIR)/staging/fractional-scale/fractional-scale-v1.xml
+VIEWPORTER_XML := $(WAYLAND_PROTOCOLS_DIR)/stable/viewporter/viewporter.xml
 
 WARNINGS = -Wall -Wextra -Wshadow -Wformat=2 -Wpointer-arith \
            -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-parameter
 CFLAGS  ?= -O2 -g
 override CFLAGS  += -std=c11 $(WARNINGS)
-override CPPFLAGS += -D_GNU_SOURCE $(PKG_CFLAGS) -Ibuild/protocol
+override CPPFLAGS += -D_GNU_SOURCE -DRX_GREETER_VERSION=\"$(VERSION)\" $(PKG_CFLAGS) -Ibuild/protocol
 override LDLIBS  += $(PKG_LIBS) -lm
 
 BUILD := build
@@ -47,6 +52,16 @@ GEN_DIR := $(BUILD)/protocol
 XDG_HEADER := $(GEN_DIR)/xdg-shell-client-protocol.h
 XDG_CODE   := $(GEN_DIR)/xdg-shell-protocol.c
 XDG_OBJECT := $(OBJDIR)/xdg-shell-protocol.o
+LAYER_HEADER := $(GEN_DIR)/wlr-layer-shell-unstable-v1-client-protocol.h
+LAYER_CODE   := $(GEN_DIR)/wlr-layer-shell-unstable-v1-protocol.c
+LAYER_OBJECT := $(OBJDIR)/wlr-layer-shell-unstable-v1-protocol.o
+FRACTIONAL_HEADER := $(GEN_DIR)/fractional-scale-v1-client-protocol.h
+FRACTIONAL_CODE   := $(GEN_DIR)/fractional-scale-v1-protocol.c
+FRACTIONAL_OBJECT := $(OBJDIR)/fractional-scale-v1-protocol.o
+VIEWPORTER_HEADER := $(GEN_DIR)/viewporter-client-protocol.h
+VIEWPORTER_CODE   := $(GEN_DIR)/viewporter-protocol.c
+VIEWPORTER_OBJECT := $(OBJDIR)/viewporter-protocol.o
+PROTOCOL_OBJECTS := $(XDG_OBJECT) $(LAYER_OBJECT) $(FRACTIONAL_OBJECT) $(VIEWPORTER_OBJECT)
 
 CORE_SRC := src/config.c src/greetd.c src/password.c src/sessions.c \
             src/ui.c src/users.c src/util.c
@@ -70,7 +85,7 @@ TEST_PROTOCOLS := \
 	$(TEST_PROTO_DIR)/wlr-virtual-pointer-unstable-v1-client-protocol.h \
 	$(TEST_PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c
 
-.PHONY: all clean check test integration install install-power-setuid \
+.PHONY: all clean check test integration multioutput install install-power-setuid \
         install-system-config uninstall
 
 all: $(TARGET) $(POWER_TARGET)
@@ -87,13 +102,40 @@ $(XDG_CODE): $(XDG_SHELL_XML) | $(GEN_DIR)
 $(XDG_OBJECT): $(XDG_CODE) $(XDG_HEADER) | $(OBJDIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
+$(LAYER_HEADER): $(LAYER_SHELL_XML) | $(GEN_DIR)
+	$(WAYLAND_SCANNER) client-header $< $@
+
+$(LAYER_CODE): $(LAYER_SHELL_XML) | $(GEN_DIR)
+	$(WAYLAND_SCANNER) private-code $< $@
+
+$(FRACTIONAL_HEADER): $(FRACTIONAL_SCALE_XML) | $(GEN_DIR)
+	$(WAYLAND_SCANNER) client-header $< $@
+
+$(FRACTIONAL_CODE): $(FRACTIONAL_SCALE_XML) | $(GEN_DIR)
+	$(WAYLAND_SCANNER) private-code $< $@
+
+$(VIEWPORTER_HEADER): $(VIEWPORTER_XML) | $(GEN_DIR)
+	$(WAYLAND_SCANNER) client-header $< $@
+
+$(VIEWPORTER_CODE): $(VIEWPORTER_XML) | $(GEN_DIR)
+	$(WAYLAND_SCANNER) private-code $< $@
+
+$(LAYER_OBJECT): $(LAYER_CODE) $(LAYER_HEADER) | $(OBJDIR)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(FRACTIONAL_OBJECT): $(FRACTIONAL_CODE) $(FRACTIONAL_HEADER) | $(OBJDIR)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(VIEWPORTER_OBJECT): $(VIEWPORTER_CODE) $(VIEWPORTER_HEADER) | $(OBJDIR)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
 $(OBJDIR)/%.o: src/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
 
-$(OBJDIR)/main.o: $(XDG_HEADER) | $(OBJDIR)
+$(OBJDIR)/main.o: $(LAYER_HEADER) $(FRACTIONAL_HEADER) $(VIEWPORTER_HEADER) | $(OBJDIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c src/main.c -o $@
 
-$(TARGET): $(MAIN_OBJ) $(CORE_OBJ) $(XDG_OBJECT)
+$(TARGET): $(MAIN_OBJ) $(CORE_OBJ) $(PROTOCOL_OBJECTS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(POWER_TARGET): $(POWER_OBJ)
@@ -103,7 +145,7 @@ $(OBJDIR)/tests/unit.o: tests/unit/unit.c | $(OBJDIR)
 	mkdir -p $(OBJDIR)/tests
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
 
-$(UNIT_TARGET): $(UNIT_OBJ) $(CORE_OBJ) $(XDG_OBJECT)
+$(UNIT_TARGET): $(UNIT_OBJ) $(CORE_OBJ) $(PROTOCOL_OBJECTS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 check test: $(UNIT_TARGET)
@@ -122,15 +164,26 @@ $(TEST_TOOL): tests/wl-input.c $(TEST_PROTOCOLS) | $(BUILD)
 		$(TEST_PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c \
 		$(PKG_LIBS) -lxkbcommon -o $@
 
+multioutput: $(TARGET) $(POWER_TARGET) $(TEST_TOOL)
+	$(PYTHON) tests/multioutput.py \
+		--binary $(abspath $(TARGET)) \
+		--power $(abspath $(POWER_TARGET)) \
+		--wl-input $(abspath $(TEST_TOOL))
+
 integration: $(TARGET) $(POWER_TARGET) $(TEST_TOOL)
 	$(PYTHON) tests/integration.py \
+		--binary $(abspath $(TARGET)) \
+		--power $(abspath $(POWER_TARGET)) \
+		--wl-input $(abspath $(TEST_TOOL))
+	$(PYTHON) tests/multioutput.py \
 		--binary $(abspath $(TARGET)) \
 		--power $(abspath $(POWER_TARGET)) \
 		--wl-input $(abspath $(TEST_TOOL))
 
 install: all
 	$(INSTALL) -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(LIBEXECDIR)" \
-		"$(DESTDIR)$(SHAREDIR)/rx-greeter/matugen"
+		"$(DESTDIR)$(SHAREDIR)/rx-greeter/matugen" \
+		"$(DESTDIR)$(SHAREDIR)/doc/rx-greeter"
 	$(INSTALL) -m755 $(TARGET) "$(DESTDIR)$(BINDIR)/rx-greeter"
 	$(INSTALL) -m755 scripts/rx-greeter-session \
 		"$(DESTDIR)$(BINDIR)/rx-greeter-session"
@@ -140,12 +193,16 @@ install: all
 		"$(DESTDIR)$(LIBEXECDIR)/rx-greeter-sync-assets"
 	$(INSTALL) -m644 configs/theme.conf \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/theme.conf"
+	$(INSTALL) -m644 configs/config.conf \
+		"$(DESTDIR)$(SHAREDIR)/rx-greeter/config.conf"
 	$(INSTALL) -m644 configs/greetd-config.toml \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/greetd-config.toml"
 	$(INSTALL) -m644 configs/matugen/rx-greeter.conf \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/matugen/rx-greeter.conf"
 	$(INSTALL) -m755 scripts/install-user-theme.sh \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/install-user-theme.sh"
+	$(INSTALL) -m644 README.md CHANGELOG.md LICENSE SECURITY.md \
+		"$(DESTDIR)$(SHAREDIR)/doc/rx-greeter/"
 
 install-power-setuid: install
 	@if [ -n "$(DESTDIR)" ]; then \
@@ -164,6 +221,12 @@ install-system-config:
 		$(INSTALL) -m644 configs/theme.conf \
 			"$(DESTDIR)$(SYSCONFDIR)/rx-greeter/theme.conf"; \
 	fi
+	@if [ -e "$(DESTDIR)$(SYSCONFDIR)/rx-greeter/config.conf" ]; then \
+		echo "Keeping existing $(DESTDIR)$(SYSCONFDIR)/rx-greeter/config.conf"; \
+	else \
+		$(INSTALL) -m644 configs/config.conf \
+			"$(DESTDIR)$(SYSCONFDIR)/rx-greeter/config.conf"; \
+	fi
 	$(INSTALL) -d "$(DESTDIR)$(LOCALSTATEDIR)/rx-greeter"
 
 uninstall:
@@ -172,9 +235,14 @@ uninstall:
 		"$(DESTDIR)$(LIBEXECDIR)/rx-greeter-power" \
 		"$(DESTDIR)$(LIBEXECDIR)/rx-greeter-sync-assets" \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/theme.conf" \
+		"$(DESTDIR)$(SHAREDIR)/rx-greeter/config.conf" \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/greetd-config.toml" \
 		"$(DESTDIR)$(SHAREDIR)/rx-greeter/matugen/rx-greeter.conf" \
-		"$(DESTDIR)$(SHAREDIR)/rx-greeter/install-user-theme.sh"
+		"$(DESTDIR)$(SHAREDIR)/rx-greeter/install-user-theme.sh" \
+		"$(DESTDIR)$(SHAREDIR)/doc/rx-greeter/README.md" \
+		"$(DESTDIR)$(SHAREDIR)/doc/rx-greeter/CHANGELOG.md" \
+		"$(DESTDIR)$(SHAREDIR)/doc/rx-greeter/LICENSE" \
+		"$(DESTDIR)$(SHAREDIR)/doc/rx-greeter/SECURITY.md"
 
 clean:
 	rm -rf $(BUILD)

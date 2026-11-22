@@ -8,7 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <stdarg.h>
 #include <sys/stat.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -275,6 +277,109 @@ find_sibling_executable(const char *argv0, const char *name)
         free(candidate);
     }
     return NULL;
+}
+
+
+char *
+expand_path(const char *value)
+{
+    if (!value) {
+        return NULL;
+    }
+    const char *home = getenv("HOME");
+    if (!home || !*home) {
+        return xstrdup(value);
+    }
+
+    const char *suffix = NULL;
+    if (value[0] == '~' && (value[1] == '/' || value[1] == '\0')) {
+        suffix = value + 1;
+    } else if (strncmp(value, "$HOME", 5) == 0 &&
+               (value[5] == '/' || value[5] == '\0')) {
+        suffix = value + 5;
+    } else if (strncmp(value, "${HOME}", 7) == 0 &&
+               (value[7] == '/' || value[7] == '\0')) {
+        suffix = value + 7;
+    }
+    if (!suffix) {
+        return xstrdup(value);
+    }
+
+    size_t need = strlen(home) + strlen(suffix) + 1;
+    char *expanded = xmalloc(need);
+    snprintf(expanded, need, "%s%s", home, suffix);
+    return expanded;
+}
+
+bool
+find_in_path(const char *name, char *out, size_t out_size)
+{
+    if (!name || !*name) {
+        return false;
+    }
+    if (strchr(name, '/')) {
+        if (!path_is_executable(name)) {
+            return false;
+        }
+        if (out && out_size) {
+            snprintf(out, out_size, "%s", name);
+        }
+        return true;
+    }
+
+    const char *path = getenv("PATH");
+    if (!path) {
+        path = "/usr/local/bin:/usr/bin:/bin";
+    }
+    const char *start = path;
+    while (*start) {
+        const char *end = strchr(start, ':');
+        size_t len = end ? (size_t)(end - start) : strlen(start);
+        if (len > 0) {
+            size_t need = len + strlen(name) + 2;
+            char *candidate = xmalloc(need);
+            snprintf(candidate, need, "%.*s/%s", (int)len, start, name);
+            bool found = path_is_executable(candidate);
+            if (found && out && out_size) {
+                snprintf(out, out_size, "%s", candidate);
+            }
+            free(candidate);
+            if (found) {
+                return true;
+            }
+        }
+        if (!end) {
+            break;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+static bool syslog_enabled = false;
+
+void
+rx_log_init(void)
+{
+    openlog("rx-greeter", LOG_PID, LOG_DAEMON);
+    syslog_enabled = true;
+}
+
+void
+rx_log(int priority, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    fputs("rx-greeter: ", stderr);
+    va_list copy;
+    va_copy(copy, args);
+    vfprintf(stderr, fmt, args);
+    fputc('\n', stderr);
+    if (syslog_enabled) {
+        vsyslog(priority, fmt, copy);
+    }
+    va_end(copy);
+    va_end(args);
 }
 
 int64_t

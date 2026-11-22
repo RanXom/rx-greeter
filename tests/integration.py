@@ -15,8 +15,10 @@ import signal
 import socket
 import subprocess
 import sys
+import struct
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 
@@ -53,6 +55,32 @@ def rect_center(rect):
     return int(rect["x"] + rect["w"] / 2), int(rect["y"] + rect["h"] / 2)
 
 
+def write_test_png(path, width=16, height=16):
+    """Write a tiny deterministic gradient PNG without extra dependencies."""
+    def chunk(kind, data):
+        body = kind + data
+        return (
+            struct.pack(">I", len(data))
+            + body
+            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        )
+
+    rows = []
+    for y in range(height):
+        row = bytearray([0])
+        for x in range(width):
+            row.extend((40 + x * 8, 70 + y * 8, 90, 255))
+        rows.append(bytes(row))
+    raw = b"".join(rows)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+    path.write_bytes(png)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
@@ -66,15 +94,72 @@ def main():
     artifacts.mkdir(parents=True, exist_ok=True)
     log(f"artifacts: {artifacts}")
 
-    theme_path = artifacts / "theme.conf"
-    base_theme = (repo / "configs" / "theme.conf").read_text(encoding="utf-8")
-    base_theme += (
-        f"\npower_helper = {args.power}\n"
-        "power_dry_run = true\n"
-        "show_cursor = true\n"
-        "fade_ms = 0\n"
+    current_user = getpass.getuser()
+    sessions_dir = artifacts / "wayland-sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "test-session.desktop").write_text(
+        "[Desktop Entry]\n"
+        "Name=Test Session\n"
+        "Comment=rx-greeter integration test\n"
+        "Exec=/bin/true\n"
+        "Type=Application\n"
+        "DesktopNames=test\n",
+        encoding="utf-8",
     )
-    theme_path.write_text(base_theme, encoding="utf-8")
+    (sessions_dir / "other-session.desktop").write_text(
+        "[Desktop Entry]\n"
+        "Name=Other Session\n"
+        "Exec=/bin/false\n"
+        "Type=Application\n"
+        "DesktopNames=other\n",
+        encoding="utf-8",
+    )
+    wallpaper = artifacts / "wallpaper.png"
+    write_test_png(wallpaper)
+
+    theme_path = artifacts / "theme.conf"
+    theme_path.write_text(
+        "background_color = #121415\n"
+        "background_overlay = 0.22\n"
+        "surface_color = #1e2021\n"
+        "surface_opacity = 0.80\n"
+        "text_color = #e2e2e3\n"
+        "primary_color = #a2cdde\n"
+        "error_color = #ffb4ab\n"
+        "outline_color = #8b9295\n"
+        "box_width = 240\n"
+        "box_height = 42\n"
+        "border_radius = 0\n"
+        "dot_spacing = 9\n"
+        "dot_radius = 2.4\n"
+        "font_family = monospace\n"
+        "fallback_font_family = sans\n"
+        "font_size = 16\n"
+        "fade_ms = 0\n"
+        "animation_ms = 0\n"
+        "show_cursor = true\n"
+        "show_clock = false\n"
+        "show_date = false\n"
+        "show_caps_lock_indicator = true\n"
+        "show_help_tips = false\n"
+        "show_user_selector = true\n"
+        "show_session_selector = true\n"
+        "show_power_buttons = true\n"
+        "show_selector_preview = true\n",
+        encoding="utf-8",
+    )
+
+    config_path = artifacts / "config.conf"
+    config_path.write_text(
+        f"theme_path = {theme_path}\n"
+        f"background_image = {wallpaper}\n"
+        f"default_user = {current_user}\n"
+        "default_session = Test Session\n"
+        f"session_dirs = {sessions_dir}\n"
+        f"power_helper = {args.power}\n"
+        "power_dry_run = true\n",
+        encoding="utf-8",
+    )
 
     runtime = Path(tempfile.mkdtemp(prefix="rx-greeter-it-", dir="/tmp"))
     os.chmod(runtime, 0o700)
@@ -87,9 +172,8 @@ def main():
 
     launcher.write_text(
         "#!/bin/sh\n"
-        f'"{args.binary}" --theme "{theme_path}" '
-        f'--debug-status "{status_path}" --power-helper "{args.power}" '
-        "--power-dry-run\n"
+        f'"{args.binary}" --config "{config_path}" '
+        f'--debug-status "{status_path}"\n'
         "status=$?\n"
         "swaymsg -t command exit >/dev/null 2>&1 || true\n"
         "exit $status\n",
@@ -234,16 +318,19 @@ def main():
 
         # --- initial state -------------------------------------------------
         state = status()
-        current_user = getpass.getuser()
         if state["phase"] != "idle" or state["user"] != current_user:
             raise Failure(f"unexpected initial state: {state}")
-        if state["session"] != "Sway":
-            raise Failure(f"expected the local Sway session, got {state['session']}")
+        if state["session"] != "Test Session":
+            raise Failure(f"expected the test session, got {state['session']}")
         if not state["background_loaded"]:
             raise Failure("wallpaper did not load")
-        expected_exec = state["session_exec"]
-        if not expected_exec:
-            raise Failure("session has no Exec argv")
+        if state.get("config_path") != str(config_path):
+            raise Failure(f"wrong config path: {state.get('config_path')}")
+        if state.get("theme_path") != str(theme_path):
+            raise Failure(f"wrong theme path: {state.get('theme_path')}")
+        expected_exec = ["/bin/true"]
+        if state["session_exec"] != expected_exec:
+            raise Failure(f"wrong session argv: {state['session_exec']}")
         screenshot("01-initial.png")
 
         # --- password editing ---------------------------------------------
@@ -286,6 +373,8 @@ def main():
         wait_until(lambda: status()["below_row"]["h"] > 30, "session selector expanded")
         screenshot("05-session-selector.png")
         before = status()["session_index"]
+        if before < 0:
+            raise Failure("no selected session")
         below_right = status()["below_right"]
         input_cmd(
             f"click {int(below_right['x'] + below_right['w'] / 2)} "
@@ -294,7 +383,10 @@ def main():
         wait_until(lambda: status()["session_index"] != before,
                    "click session right arrow")
         input_cmd("key Left")
-        wait_until(lambda: status()["session_index"] == 0, "session back to Sway")
+        wait_until(lambda: status()["session_index"] == before,
+                   "session back to Test Session")
+        wait_until(lambda: status()["session"] == "Test Session",
+                   "selected session name")
 
         # --- power selector and dry-run keys ------------------------------
         input_cmd("key Down")

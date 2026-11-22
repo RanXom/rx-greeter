@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static void
@@ -40,12 +42,74 @@ valid_action(const char *action)
     return NULL;
 }
 
+static int64_t
+now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int
+wait_with_timeout(pid_t pid, int timeout_ms)
+{
+    int status = 0;
+    int64_t deadline = now_ms() + timeout_ms;
+    for (;;) {
+        pid_t result = waitpid(pid, &status, WNOHANG);
+        if (result == pid) {
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        if (result < 0 && errno != EINTR) {
+            return -1;
+        }
+        if (now_ms() >= deadline) {
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            }
+            return -1;
+        }
+        usleep(10000);
+    }
+}
+
+static int
+try_loginctl(const char *action)
+{
+    const char *loginctl = NULL;
+    if (access("/usr/bin/loginctl", X_OK) == 0) {
+        loginctl = "/usr/bin/loginctl";
+    } else if (access("/bin/loginctl", X_OK) == 0) {
+        loginctl = "/bin/loginctl";
+    }
+    if (!loginctl) {
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        char *const envp[] = {
+            (char *)"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            (char *)"LANG=C",
+            NULL,
+        };
+        execle(loginctl, "loginctl", action, (char *)NULL, envp);
+        _exit(127);
+    }
+    return wait_with_timeout(pid, 5000) == 0 ? 0 : -1;
+}
+
 static int
 try_doas(const char *action)
 {
     const char *doas = NULL;
     if (access("/usr/bin/doas", X_OK) == 0) {
         doas = "/usr/bin/doas";
+    } else if (access("/usr/local/bin/doas", X_OK) == 0) {
+        doas = "/usr/local/bin/doas";
     } else if (access("/bin/doas", X_OK) == 0) {
         doas = "/bin/doas";
     }
@@ -72,35 +136,14 @@ try_doas(const char *action)
         execl(doas, "doas", "-n", "-u", "root", self, action, (char *)NULL);
         _exit(127);
     }
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-    }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        return 0;
-    }
-    return -1;
+    return wait_with_timeout(pid, 15000) == 0 ? 0 : -1;
 }
 
 static int
 suspend_system(void)
 {
-    pid_t pid = fork();
-    if (pid == 0) {
-        char *const envp[] = {
-            (char *)"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            (char *)"LANG=C",
-            NULL,
-        };
-        execle("/usr/bin/loginctl", "loginctl", "suspend", (char *)NULL, envp);
-        _exit(127);
-    }
-    if (pid > 0) {
-        int status = 0;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-        }
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            return 0;
-        }
+    if (try_loginctl("suspend") == 0) {
+        return 0;
     }
 
     int fd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
@@ -167,6 +210,10 @@ main(int argc, char **argv)
 
     if (strcmp(action, "suspend") == 0) {
         return suspend_system();
+    }
+
+    if (try_loginctl(action) == 0) {
+        return 0;
     }
 
     sync();
