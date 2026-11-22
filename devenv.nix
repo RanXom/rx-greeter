@@ -16,22 +16,28 @@
     gdb # no debugger installed system-wide (lldb is also absent)
     bear # wraps `make` and writes compile_commands.json for clangd
     lazygit # terminal UI for git
+
+    # rx-greeter build dependencies. These are the libraries pkg-config and
+    # wayland-scanner resolve inside the devenv; the final binary records
+    # ordinary sonames and runs against the host's libraries outside Nix.
+    pkg-config
+    wayland
+    wayland-scanner
+    wayland-protocols
+    libxkbcommon
+    cairo
+    json_c
+    fontconfig
+
+    # Test-only tools. Sway itself intentionally comes from the host: the
+    # nested test needs the same wlroots/Sway build used by the live setup.
+    grim
+    python3
   ];
 
   env.DEVSHELL_NAME = "rx-greeter";
 
-  # ---------------------------------------------------------------------------
-  # Add these when rx-greeter actually starts needing them, not before.
-  #
-  # packages = with pkgs; [
-  #   json-c                                   # greetd IPC payloads
-  #   wayland wayland-protocols libxkbcommon   # Wayland client + keymaps
-  #   libGL mesa                               # rendering backend for Clay
-  #   freetype harfbuzz                        # text rendering
-  # ];
-  #
-  # Tip: if you later want a task instead of remembering commands:
-  #   scripts.build.exec = "make";
-  #   scripts.run.exec = "make run";
-  # ---------------------------------------------------------------------------
+  scripts.build.exec = "make";
+  scripts.check.exec = "make check";
+  scripts.integration.exec = "make integration";
 }

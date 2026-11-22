@@ -1,0 +1,14 @@
+# Example /etc/greetd/config.toml entry for rx-greeter.
+#
+# Back up the live file before changing it:
+#   sudo cp -a /etc/greetd/config.toml /etc/greetd/config.toml.bak
+#
+# Do not apply this until rx-greeter has passed the nested/mock tests and a
+# spare-TTY or VM test. The live greeter should remain usable.
+
+[terminal]
+vt = 7
+
+[default_session]
+command = "/usr/local/bin/rx-greeter-session"
+user = "greetd"

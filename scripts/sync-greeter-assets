@@ -1,0 +1,55 @@
+#!/bin/sh
+# Copy the current user theme and blurred wallpaper to /var/lib/rx-greeter so
+# the greetd user can read them even when the user's home is private.
+#
+# Run as root after wallpaper/Matugen changes:
+#   sudo /usr/local/libexec/rx-greeter-sync-assets
+#
+# When the user's home is already traversable by greetd (the usual 755/644
+# setup), rx-greeter reads ~/.config/rx-greeter/theme.conf directly and this
+# script is unnecessary.
+
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "rx-greeter-sync-assets: run as root" >&2
+    exit 1
+fi
+
+_user="${RX_GREETER_USER:-ranxom}"
+_home="$(getent passwd "${_user}" | cut -d: -f6)"
+if [ -z "${_home}" ] || [ ! -d "${_home}" ]; then
+    echo "rx-greeter-sync-assets: no home for user ${_user}" >&2
+    exit 1
+fi
+
+_dest="/var/lib/rx-greeter"
+_theme="${RX_GREETER_THEME:-${_home}/.config/rx-greeter/theme.conf}"
+if [ ! -r "${_theme}" ]; then
+    _theme="/etc/rx-greeter/theme.conf"
+fi
+if [ ! -r "${_theme}" ]; then
+    echo "rx-greeter-sync-assets: no readable theme" >&2
+    exit 1
+fi
+
+install -d -m755 "${_dest}"
+_bg="$(sed -n 's/^[[:space:]]*background_image[[:space:]]*=[[:space:]]*//p' \
+    "${_theme}" | head -n1 | tr -d '"')"
+if [ -n "${_bg}" ] && [ -r "${_bg}" ]; then
+    install -m644 "${_bg}" "${_dest}/background.png"
+    _theme_bg="${_dest}/background.png"
+else
+    _theme_bg="${_bg}"
+fi
+
+_tmp="${_dest}/.theme.conf.$$"
+sed "s|^background_image[[:space:]]*=.*|background_image = ${_theme_bg}|" \
+    "${_theme}" >"${_tmp}"
+chmod 644 "${_tmp}"
+mv -f "${_tmp}" "${_dest}/theme.conf"
+
+echo "installed ${_dest}/theme.conf"
+if [ -n "${_theme_bg}" ]; then
+    echo "wallpaper: ${_theme_bg}"
+fi

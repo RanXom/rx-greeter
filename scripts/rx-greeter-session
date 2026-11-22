@@ -1,0 +1,214 @@
+#!/usr/bin/env sh
+# rx-greeter-session: start the greeter under a minimal nested Sway compositor.
+#
+# Modeled on noctalia-greeter-session: private XDG_RUNTIME_DIR, dbus-run-session,
+# stale Wayland/IPC variables removed, and stdout/stderr kept off the VT.
+#
+# Useful environment:
+#   RX_GREETER_BIN            greeter binary (default: sibling or /usr/local/bin)
+#   RX_GREETER_THEME          theme file
+#   RX_GREETER_LOG            "stderr", "none", or a writable file path
+#   RX_GREETER_DRM_CARD       DRM card for WLR_DRM_DEVICES
+#   RX_GREETER_DRM_RENDER     render node for WLR_RENDER_DRM_DEVICE
+#   RX_GREETER_DGPU_OFF       optional executable to power off the dGPU
+#   RX_GREETER_XKB_LAYOUT     keyboard layout (default: us)
+#   RX_GREETER_XKB_OPTIONS    xkb options, e.g. "caps:escape"
+#   RX_GREETER_OUTPUT_SCALE   optional Sway output scale, e.g. 1.4
+#   RX_GREETER_COMPOSITOR     compositor binary (default: sway)
+#   WLR_LOG                   wlroots log level (default: error)
+
+set -eu
+
+_session_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+if [ -n "${RX_GREETER_BIN:-}" ]; then
+    GREETER_BIN="${RX_GREETER_BIN}"
+elif [ -x "${_session_dir}/rx-greeter" ]; then
+    GREETER_BIN="${_session_dir}/rx-greeter"
+elif [ -x /usr/local/bin/rx-greeter ]; then
+    GREETER_BIN="/usr/local/bin/rx-greeter"
+else
+    GREETER_BIN="/usr/bin/rx-greeter"
+fi
+
+COMPOSITOR_BIN="${RX_GREETER_COMPOSITOR:-$(command -v sway 2>/dev/null || true)}"
+if [ -z "${COMPOSITOR_BIN}" ] || [ ! -x "${COMPOSITOR_BIN}" ]; then
+    echo "rx-greeter-session: sway was not found" >&2
+    exit 1
+fi
+if [ ! -x "${GREETER_BIN}" ]; then
+    echo "rx-greeter-session: greeter binary not found: ${GREETER_BIN}" >&2
+    exit 1
+fi
+
+# A private runtime directory. mktemp avoids clobbering another greeter's
+# socket if two instances are started accidentally. It is intentionally left
+# behind on exit: the system tmp cleaner owns it, and exec'ing the compositor
+# is more important than a shell cleanup trap here.
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}" ]; then
+    _pam_runtime="${XDG_RUNTIME_DIR}"
+else
+    _pam_runtime="unset"
+fi
+
+# Best-effort cleanup of this user's runtime directory from a previous run.
+# The compositor is exec'd below, so a shell trap cannot own this.
+for _old in "${TMPDIR:-/tmp}"/rx-greeter-runtime.*; do
+    [ -d "${_old}" ] || continue
+    [ -O "${_old}" ] || continue
+    rm -rf -- "${_old}" 2>/dev/null || true
+done
+
+_runtime="$(mktemp -d "${TMPDIR:-/tmp}/rx-greeter-runtime.XXXXXX")"
+chmod 700 "${_runtime}"
+XDG_RUNTIME_DIR="${_runtime}"
+export XDG_RUNTIME_DIR
+
+# Keep greeter/compositor noise off the VT. A file is available for debugging;
+# otherwise the session start line goes to syslog when logger is present.
+case "${RX_GREETER_LOG:-}" in
+    ""|none|NONE)
+        _log_file=""
+        ;;
+    "-"|stderr|STDERR|stdout|STDOUT)
+        _log_file=""
+        _log_console=1
+        ;;
+    *)
+        if touch "${RX_GREETER_LOG}" 2>/dev/null; then
+            _log_file="${RX_GREETER_LOG}"
+        else
+            _log_file=""
+        fi
+        ;;
+esac
+
+_log_console="${_log_console:-0}"
+if [ "${_log_console}" -eq 0 ] && [ -z "${_log_file}" ]; then
+    exec >/dev/null 2>&1
+fi
+if [ "${_log_console}" -eq 0 ] && [ -n "${_log_file}" ]; then
+    exec >>"${_log_file}" 2>&1
+fi
+
+echo "=== rx-greeter-session $(date -Iseconds 2>/dev/null || true) pid=$$ uid=$(id -u) ==="
+echo "GREETER_BIN=${GREETER_BIN}"
+echo "COMPOSITOR_BIN=${COMPOSITOR_BIN}"
+echo "GREETD_SOCK=${GREETD_SOCK:-unset}"
+echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} (pam=${_pam_runtime})"
+echo "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
+
+if command -v logger >/dev/null 2>&1; then
+    logger -t rx-greeter-session \
+        "starting rx-greeter (user=$(id -un), runtime=${XDG_RUNTIME_DIR})" \
+        2>/dev/null || true
+fi
+
+unset WAYLAND_DISPLAY SWAYSOCK I3SOCK
+unset SWAYSOCK
+
+# Pin wlroots to the AMD iGPU, matching ~/.local/bin/sway-session. If the
+# machine has no such device, wlroots falls back to its normal auto-detection.
+_amd_card="${RX_GREETER_DRM_CARD:-}"
+_amd_render="${RX_GREETER_DRM_RENDER:-}"
+if [ -z "${_amd_card}" ]; then
+    _amd_card="$(readlink -f /dev/dri/by-path/pci-0000:05:00.0-card 2>/dev/null || true)"
+fi
+if [ -z "${_amd_render}" ]; then
+    _amd_render="$(readlink -f /dev/dri/by-path/pci-0000:05:00.0-render 2>/dev/null || true)"
+fi
+if [ -n "${_amd_card}" ] && [ -e "${_amd_card}" ]; then
+    export WLR_DRM_DEVICES="${_amd_card}"
+fi
+if [ -n "${_amd_render}" ] && [ -e "${_amd_render}" ]; then
+    export WLR_RENDER_DRM_DEVICE="${_amd_render}"
+fi
+
+# Optional dGPU power-off hook. Install a fixed helper here (or point the
+# variable at one) if the dotfiles install a doas rule for the greetd user.
+if [ -n "${RX_GREETER_DGPU_OFF:-}" ] && [ -x "${RX_GREETER_DGPU_OFF}" ]; then
+    "${RX_GREETER_DGPU_OFF}" >/dev/null 2>&1 || true
+elif [ -x /usr/local/libexec/rx-greeter-dgpu-off ]; then
+    /usr/local/libexec/rx-greeter-dgpu-off >/dev/null 2>&1 || true
+fi
+
+export WLR_LOG="${WLR_LOG:-error}"
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=rx-greeter
+export XDG_CURRENT_DESKTOP=rx-greeter
+export XDG_SESSION_CLASS=greeter
+export GREETER_BIN
+if [ -n "${GREETD_SOCK:-}" ]; then
+    export GREETD_SOCK
+fi
+if [ -n "${RX_GREETER_POWER:-}" ]; then
+    export RX_GREETER_POWER
+fi
+
+# Choose the user's generated theme when it is readable by greetd. The
+# fallbacks are installed copies for systems with a private home directory.
+if [ -z "${RX_GREETER_THEME:-}" ]; then
+    for _candidate in \
+        /home/ranxom/.config/rx-greeter/theme.conf \
+        /var/lib/rx-greeter/theme.conf \
+        /etc/rx-greeter/theme.conf
+    do
+        if [ -r "${_candidate}" ]; then
+            RX_GREETER_THEME="${_candidate}"
+            export RX_GREETER_THEME
+            break
+        fi
+    done
+fi
+
+# Keep a tiny minimal Sway config. No user config, bars, idle daemons, or
+# wallpapers: the greeter draws the wallpaper itself in its fullscreen window.
+_xkb_layout="${RX_GREETER_XKB_LAYOUT:-us}"
+case "${_xkb_layout}" in
+    *[!A-Za-z0-9_,+-]*) _xkb_layout="us" ;;
+esac
+_xkb_options="${RX_GREETER_XKB_OPTIONS:-}"
+case "${_xkb_options}" in
+    *[!A-Za-z0-9_,:+-]*) _xkb_options="" ;;
+esac
+
+_sway_config="${XDG_RUNTIME_DIR}/sway.conf"
+_launcher="${XDG_RUNTIME_DIR}/launch-greeter"
+
+cat >"${_launcher}" <<EOF
+#!/bin/sh
+"${GREETER_BIN}"
+_status=\$?
+swaymsg -t command exit >/dev/null 2>&1 || true
+exit \$_status
+EOF
+chmod 700 "${_launcher}"
+
+{
+    echo "xwayland disable"
+    echo "default_border none"
+    echo "default_floating_border none"
+    echo "hide_edge_borders both"
+    echo "focus_follows_mouse no"
+    echo "for_window [app_id=\"rx-greeter\"] fullscreen enable"
+    echo "for_window [app_id=\"rx-greeter\"] focus"
+    echo "input type:keyboard xkb_layout ${_xkb_layout}"
+    if [ -n "${_xkb_options}" ]; then
+        echo "input type:keyboard xkb_options ${_xkb_options}"
+    fi
+    if [ -n "${RX_GREETER_OUTPUT_SCALE:-}" ]; then
+        case "${RX_GREETER_OUTPUT_SCALE}" in
+            *[!0-9.]*) ;;
+            *) echo "output * scale ${RX_GREETER_OUTPUT_SCALE}" ;;
+        esac
+    fi
+    echo "exec ${_launcher}"
+} >"${_sway_config}"
+
+echo "launch: ${COMPOSITOR_BIN} -c ${_sway_config}"
+if command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- "${COMPOSITOR_BIN}" -c "${_sway_config}"
+fi
+
+echo "warn: dbus-run-session not found; starting the compositor without a session bus."
+exec "${COMPOSITOR_BIN}" -c "${_sway_config}"

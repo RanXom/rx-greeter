@@ -10,3 +10,7 @@ compile_commands.json
 # build artefacts
 *.o
 build/
+
+# Python test bytecode
+__pycache__/
+*.pyc
