@@ -84,10 +84,10 @@ config_init(Config *config)
     config->selector_preview_font_size = 13.0;
     config->selector_preview_color = config->outline_color;
     config->selector_preview_margin = 10.0;
-    config->selector_height = 35.0;
+    config->selector_height = 26.0;
     config->selector_spacing = 10.0;
-    config->selector_font_size = 14.0;
-    config->selector_arrow_font_size = 17.0;
+    config->selector_font_size = 13.0;
+    config->selector_arrow_font_size = 15.0;
     config->selector_arrow_width = 30.0;
     config->selector_radius = 10.0;
 

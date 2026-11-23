@@ -371,7 +371,7 @@ def main():
         # --- user selector -------------------------------------------------
         input_cmd("key Up")
         wait_until(lambda: status()["focus"] == "user", "user selector focus")
-        wait_until(lambda: status()["user_row"]["h"] > 30, "user selector expanded")
+        wait_until(lambda: status()["user_row"]["h"] > 20, "user selector expanded")
         screenshot("04-user-selector.png")
         user_row = status()["user_row"]
         input_cmd(
@@ -383,7 +383,7 @@ def main():
         # --- session selector ---------------------------------------------
         input_cmd("key Down")
         wait_until(lambda: status()["focus"] == "session", "session selector focus")
-        wait_until(lambda: status()["below_row"]["h"] > 30, "session selector expanded")
+        wait_until(lambda: status()["below_row"]["h"] > 20, "session selector expanded")
         screenshot("05-session-selector.png")
         before = status()["session_index"]
         if before < 0:
@@ -429,7 +429,7 @@ def main():
         wait_until(lambda: status()["focus"] == "session", "session refocused")
         input_cmd("key Down")
         wait_until(lambda: status()["focus"] == "power", "power selector focus")
-        wait_until(lambda: status()["below_row"]["h"] > 30, "power selector expanded")
+        wait_until(lambda: status()["below_row"]["h"] > 20, "power selector expanded")
         input_cmd("key Right")
         wait_until(lambda: status()["power_index"] == 1, "power selector right")
         screenshot("06-power-selector.png")

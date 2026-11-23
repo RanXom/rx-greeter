@@ -259,7 +259,7 @@ def main():
         # pointer hit-testing uses the surface's logical dimensions.
         input_cmd("key Up")
         wait_until(lambda: status()["focus"] == "user", "user selector focus")
-        wait_until(lambda: status()["user_row"]["h"] > 30,
+        wait_until(lambda: status()["user_row"]["h"] > 20,
                    "user selector expanded")
         row = status()["user_row"]
         rect = rects["HEADLESS-1"]

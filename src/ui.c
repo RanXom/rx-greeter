@@ -98,6 +98,16 @@ text_extents(cairo_t *cr, const char *text, cairo_text_extents_t *extents)
     cairo_text_extents(cr, text ? text : "", extents);
 }
 
+/* Center text on the font's em box, not on each string's ink extents. This
+ * keeps labels with descenders (reboot/poweroff/suspend) on one baseline. */
+static double
+text_center_baseline(cairo_t *cr, double cy)
+{
+    cairo_font_extents_t extents;
+    cairo_font_extents(cr, &extents);
+    return cy + (extents.ascent - extents.descent) / 2.0;
+}
+
 static void
 draw_text_center(cairo_t *cr, double cx, double cy, const char *text,
                  const char *family, double size, Rgba color, double alpha)
@@ -107,7 +117,7 @@ draw_text_center(cairo_t *cr, double cx, double cy, const char *text,
     text_extents(cr, text, &ext);
     set_rgba(cr, color, alpha);
     cairo_move_to(cr, cx - ext.width / 2.0 - ext.x_bearing,
-                  cy - ext.height / 2.0 - ext.y_bearing);
+                  text_center_baseline(cr, cy));
     cairo_show_text(cr, text ? text : "");
 }
 
@@ -159,7 +169,7 @@ draw_text_elided(cairo_t *cr, double cx, double cy, const char *text,
     if (ext.width <= max_width) {
         set_rgba(cr, color, alpha);
         cairo_move_to(cr, cx - ext.width / 2.0 - ext.x_bearing,
-                      cy - ext.height / 2.0 - ext.y_bearing);
+                      text_center_baseline(cr, cy));
         cairo_show_text(cr, text);
         return;
     }
@@ -195,7 +205,7 @@ draw_text_elided(cairo_t *cr, double cx, double cy, const char *text,
     text_extents(cr, shown, &ext);
     set_rgba(cr, color, alpha);
     cairo_move_to(cr, cx - ext.width / 2.0 - ext.x_bearing,
-                  cy - ext.height / 2.0 - ext.y_bearing);
+                  text_center_baseline(cr, cy));
     cairo_show_text(cr, shown);
     free(shown);
 }
@@ -378,6 +388,41 @@ layout_below_height(const Ui *ui, int64_t now)
     return animation_value(ui->below_height_from, ui->below_height_to,
                            ui->below_height_started_ms, ui->config->animation_ms,
                            now);
+}
+
+static double
+selector_start_center(const Ui *ui, bool below)
+{
+    double edge = below ? ui->field_rect.y + ui->field_rect.h
+                        : ui->field_rect.y;
+    double direction = below ? 1.0 : -1.0;
+    return edge + direction *
+        (ui->config->selector_preview_margin +
+         ui->config->selector_preview_font_size / 2.0);
+}
+
+static double
+selector_end_center(const Ui *ui, bool below)
+{
+    double edge = below ? ui->field_rect.y + ui->field_rect.h
+                        : ui->field_rect.y;
+    double direction = below ? 1.0 : -1.0;
+    return edge + direction *
+        (ui->config->selector_spacing +
+         ui->config->selector_height / 2.0);
+}
+
+static double
+selector_row_y(const Ui *ui, double height, bool below)
+{
+    double start = selector_start_center(ui, below);
+    double end = selector_end_center(ui, below);
+    double t = 0.0;
+    if (ui->config->selector_height > 0.0) {
+        t = clamp01(height / ui->config->selector_height);
+    }
+    double center = start + (end - start) * t;
+    return center - height / 2.0;
 }
 
 static void
@@ -1223,16 +1268,15 @@ layout(Ui *ui, int64_t now)
     ui->user_height = layout_user_height(ui, now);
     ui->below_height = layout_below_height(ui, now);
 
-    double spacing = config->element_spacing;
     ui->user_row_rect = (UiRect){
         ui->field_rect.x,
-        ui->field_rect.y - spacing - ui->user_height,
+        selector_row_y(ui, ui->user_height, false),
         ui->field_rect.w,
         ui->user_height,
     };
     ui->below_row_rect = (UiRect){
         ui->field_rect.x,
-        ui->field_rect.y + ui->field_rect.h + spacing,
+        selector_row_y(ui, ui->below_height, true),
         ui->field_rect.w,
         ui->below_height,
     };

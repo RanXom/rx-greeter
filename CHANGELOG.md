@@ -4,6 +4,12 @@
 
 ### Fixes
 
+- Reduced the selector expansion distance and matched preview/selector text
+  sizes. The row now grows from the preview's center to its final center,
+  which removes the one-pixel jump the preview used to make when a selector
+  collapsed.
+- Centered selector labels and arrows on the font baseline, so poweroff,
+  reboot, suspend, usernames, and session names share one vertical alignment.
 - Fixed the flicker at the end of the selector collapse animation. The row
   text is no longer clipped to the shrinking row height, which used to slice
   it into a thin line before the preview appeared. The selector arrows fade
